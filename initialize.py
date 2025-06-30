@@ -120,6 +120,40 @@ def initialize_job_loop():
     return defer.DeferredTask("JobLoop").start_task(run_loop)
 
 
+def initialize_event_listeners():
+    import asyncio
+    from python.helpers.event_bus import AsyncEventBus
+
+    bus = AsyncEventBus.get()
+
+    async def _print_agent_response(response: str, context):
+        PrintStyle(font_color="cyan", padding=False).print(
+            f"Agent responded: {response}"
+        )
+
+    bus.on(
+        "agent.response",
+        lambda response, context: asyncio.create_task(
+            _print_agent_response(response, context)
+        ),
+    )
+
+    async def _print_task_finished(task, result, error):
+        msg = f"Task '{task.name}' finished"
+        if error:
+            msg += f" with error: {error}"
+        elif result:
+            msg += f" => {result}"
+        PrintStyle(font_color="green", italic=True, padding=False).print(msg)
+
+    bus.on(
+        "task.finished",
+        lambda task, result=None, error=None: asyncio.create_task(
+            _print_task_finished(task, result, error)
+        ),
+    )
+
+
 def _args_override(config):
     # update config with runtime args
     for key, value in runtime.args.items():
