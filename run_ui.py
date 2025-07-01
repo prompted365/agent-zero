@@ -242,6 +242,7 @@ def init_a0():
     initialize.initialize_mcp()
     # start job loop
     initialize.initialize_job_loop()
+    initialize.initialize_event_listeners()
 
     # only wait for init chats, otherwise they would seem to dissapear for a while on restart
     init_chats.result_sync()

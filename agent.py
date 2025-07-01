@@ -378,6 +378,10 @@ class Agent:
                             # process tools requested in agent message
                             tools_result = await self.process_tools(agent_response)
                             if tools_result:  # final response of message loop available
+                                from python.helpers.event_bus import AsyncEventBus
+                                AsyncEventBus.get().emit(
+                                    "agent.response", tools_result, self.context
+                                )
                                 return tools_result  # break the execution if the task is done
 
                     # exceptions inside message loop:

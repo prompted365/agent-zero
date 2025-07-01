@@ -837,6 +837,10 @@ class TaskScheduler:
                 self._printer.print(f"Scheduler Task '{current_task.name}' completed: {result}")
                 await self._persist_chat(current_task, context)
                 await current_task.on_success(result)
+                from python.helpers.event_bus import AsyncEventBus
+                AsyncEventBus.get().emit(
+                    "task.finished", current_task, result, None
+                )
 
                 # Explicitly verify task was updated in storage after success
                 await self._tasks.reload()
@@ -849,6 +853,10 @@ class TaskScheduler:
                 # Error
                 self._printer.print(f"Scheduler Task '{current_task.name}' failed: {e}")
                 await current_task.on_error(str(e))
+                from python.helpers.event_bus import AsyncEventBus
+                AsyncEventBus.get().emit(
+                    "task.finished", current_task, None, str(e)
+                )
 
                 # Explicitly verify task was updated in storage after error
                 await self._tasks.reload()
