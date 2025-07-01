@@ -118,6 +118,12 @@ docker run -p 50001:80 frdel/agent-zero-run
 # Visit http://localhost:50001 to start
 ```
 
+### 📡 Optional NATS Event Bus
+
+Set `NATS_URL` in your `.env` to enable a distributed event bus for multi-process
+scaling. When configured, background workers and the UI communicate over NATS so
+you can run components separately.
+
 ## 🐳 Fully Dockerized, with Speech-to-Text and TTS
 
 ![Settings](docs/res/settings-page-ui.png)
