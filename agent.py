@@ -567,12 +567,23 @@ class Agent:
         # add to history
         msg = self.hist_add_message(False, content=content)  # type: ignore
         self.last_user_message = msg
+        try:
+            from python.helpers.event_bus import AsyncEventBus
+            AsyncEventBus.get().emit("user.message", message)
+        except Exception:
+            pass
         return msg
 
     def hist_add_ai_response(self, message: str):
         self.loop_data.last_response = message
         content = self.parse_prompt("fw.ai_response.md", message=message)
-        return self.hist_add_message(True, content=content)
+        result = self.hist_add_message(True, content=content)
+        try:
+            from python.helpers.event_bus import AsyncEventBus
+            AsyncEventBus.get().emit("agent.message", message)
+        except Exception:
+            pass
+        return result
 
     def hist_add_warning(self, message: history.MessageContent):
         content = self.parse_prompt("fw.warning.md", message=message)

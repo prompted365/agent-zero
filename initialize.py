@@ -123,8 +123,13 @@ def initialize_job_loop():
 def initialize_event_listeners():
     import asyncio
     from python.helpers.event_bus import AsyncEventBus
+    from python.helpers.graph_worker import KnowledgeGraphWorker
 
     bus = AsyncEventBus.get()
+    # ensure NATS connection
+    asyncio.create_task(bus._connect_nats())
+    # start knowledge graph worker to track messages
+    KnowledgeGraphWorker()
 
     async def _print_agent_response(response: str, context):
         PrintStyle(font_color="cyan", padding=False).print(
