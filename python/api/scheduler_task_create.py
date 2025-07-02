@@ -56,11 +56,12 @@ class SchedulerTaskCreate(ApiHandler):
                 # Parse the string schedule
                 parts = schedule.split(' ')
                 task_schedule = TaskSchedule(
-                    minute=parts[0] if len(parts) > 0 else "*",
-                    hour=parts[1] if len(parts) > 1 else "*",
-                    day=parts[2] if len(parts) > 2 else "*",
-                    month=parts[3] if len(parts) > 3 else "*",
-                    weekday=parts[4] if len(parts) > 4 else "*"
+                    second=parts[0] if len(parts) > 0 else "0",
+                    minute=parts[1] if len(parts) > 1 else "*",
+                    hour=parts[2] if len(parts) > 2 else "*",
+                    day=parts[3] if len(parts) > 3 else "*",
+                    month=parts[4] if len(parts) > 4 else "*",
+                    weekday=parts[5] if len(parts) > 5 else "*"
                 )
             elif isinstance(schedule, dict):
                 # Use our standardized parsing function

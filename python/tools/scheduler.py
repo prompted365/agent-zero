@@ -141,6 +141,7 @@ class SchedulerTool(Tool):
         dedicated_context: bool = kwargs.get("dedicated_context", False)
 
         task_schedule = TaskSchedule(
+            second=schedule.get("second", "0"),
             minute=schedule.get("minute", "*"),
             hour=schedule.get("hour", "*"),
             day=schedule.get("day", "*"),

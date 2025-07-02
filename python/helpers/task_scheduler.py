@@ -46,6 +46,7 @@ class TaskType(str, Enum):
 
 
 class TaskSchedule(BaseModel):
+    second: str = "0"
     minute: str
     hour: str
     day: str
@@ -54,7 +55,9 @@ class TaskSchedule(BaseModel):
     timezone: str = Field(default_factory=lambda: Localization.get().get_timezone())
 
     def to_crontab(self) -> str:
-        return f"{self.minute} {self.hour} {self.day} {self.month} {self.weekday}"
+        return (
+            f"{self.second} {self.minute} {self.hour} {self.day} {self.month} {self.weekday}"
+        )
 
 
 class TaskPlan(BaseModel):
@@ -938,6 +941,7 @@ def parse_datetime(dt_str: Optional[str]) -> Optional[datetime]:
 def serialize_task_schedule(schedule: TaskSchedule) -> Dict[str, str]:
     """Convert TaskSchedule to a standardized dictionary format."""
     return {
+        'second': schedule.second,
         'minute': schedule.minute,
         'hour': schedule.hour,
         'day': schedule.day,
@@ -951,6 +955,7 @@ def parse_task_schedule(schedule_data: Dict[str, str]) -> TaskSchedule:
     """Parse dictionary into TaskSchedule with validation."""
     try:
         return TaskSchedule(
+            second=schedule_data.get('second', '0'),
             minute=schedule_data.get('minute', '*'),
             hour=schedule_data.get('hour', '*'),
             day=schedule_data.get('day', '*'),
