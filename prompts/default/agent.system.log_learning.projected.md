@@ -1,0 +1,2 @@
+# Projected Thoughts
+{{logs}}
