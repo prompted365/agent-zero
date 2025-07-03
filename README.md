@@ -124,6 +124,20 @@ Set `NATS_URL` in your `.env` to enable a distributed event bus for multi-proces
 scaling. When configured, background workers and the UI communicate over NATS so
 you can run components separately.
 
+### 🔔 Log Event Listeners
+
+Every call to `python/helpers/log.py` emits a `log.record` event via the bus.
+Subscribe your own callbacks for custom monitoring or analytics:
+
+```python
+from python.helpers.event_bus import AsyncEventBus
+
+bus = AsyncEventBus.get()
+bus.on("log.record", lambda record: print(record))
+```
+
+The default `StructuredLogListener` stores JSON Lines in `logs/events.jsonl`.
+
 ## 🐳 Fully Dockerized, with Speech-to-Text and TTS
 
 ![Settings](docs/res/settings-page-ui.png)
