@@ -4,6 +4,7 @@ from typing import Any, Literal, Optional, Dict
 import uuid
 from collections import OrderedDict  # Import OrderedDict
 
+
 Type = Literal[
     "agent",
     "browser",
@@ -94,6 +95,8 @@ class Log:
         self.guid: str = str(uuid.uuid4())
         self.updates: list[int] = []
         self.logs: list[LogItem] = []
+        from python.helpers.event_bus import AsyncEventBus
+        self.bus = AsyncEventBus.get()
         self.set_initial_progress()
 
     def log(
@@ -126,6 +129,10 @@ class Log:
         self.logs.append(item)
         self.updates += [item.no]
         self._update_progress_from_item(item)
+        try:
+            self.bus.emit("log.record", item.output())
+        except Exception:
+            pass
         return item
 
     def _update_item(
