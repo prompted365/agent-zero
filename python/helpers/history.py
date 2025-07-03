@@ -164,35 +164,36 @@ class Topic(Record):
             * LARGE_MESSAGE_TO_TOPIC_RATIO
         )
         large_msgs = []
-        for m in (m for m in self.messages if not m.summary):
-            # TODO refactor this
-            out = m.output()
+        for msg in self.messages:
+            if msg.summary:
+                continue
+            out = msg.output()
             text = output_text(out)
-            tok = m.get_tokens()
-            leng = len(text)
+            tok = msg.get_tokens()
             if tok > msg_max_size:
-                large_msgs.append((m, tok, leng, out))
-        large_msgs.sort(key=lambda x: x[1], reverse=True)
-        for msg, tok, leng, out in large_msgs:
-            trim_to_chars = leng * (msg_max_size / tok)
-            # raw messages will be replaced as a whole, they would become invalid when truncated
-            if _is_raw_message(out[0]["content"]):
-                msg.set_summary(
-                    "Message content replaced to save space in context window"
-                )
+                large_msgs.append((msg, tok, len(text), out))
 
-            # regular messages will be truncated
-            else:
-                trunc = messages.truncate_dict_by_ratio(
-                    self.history.agent,
-                    out[0]["content"],
-                    trim_to_chars * 1.15,
-                    trim_to_chars * 0.85,
-                )
-                msg.set_summary(_json_dumps(trunc))
+        if not large_msgs:
+            return False
 
-            return True
-        return False
+        # only modify the single largest message to minimize context churn
+        msg, tok, leng, out = max(large_msgs, key=lambda x: x[1])
+        trim_to_chars = leng * (msg_max_size / tok)
+        # raw messages will be replaced entirely when truncated
+        if _is_raw_message(out[0]["content"]):
+            msg.set_summary(
+                "Message content replaced to save space in context window"
+            )
+        else:
+            trunc = messages.truncate_dict_by_ratio(
+                self.history.agent,
+                out[0]["content"],
+                trim_to_chars * 1.15,
+                trim_to_chars * 0.85,
+            )
+            msg.set_summary(_json_dumps(trunc))
+
+        return True
 
     async def compress(self) -> bool:
         compress = await self.compress_large_messages()
