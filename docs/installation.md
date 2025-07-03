@@ -189,6 +189,10 @@ Learn more about Remote Function Calls and their purpose [here](#7-configure-age
 > [!IMPORTANT]
 > Always keep your API keys and passwords secure.
 
+### Optional NATS Event Bus
+
+If you plan to scale Agent Zero or run background workers separately, you can enable event-based communication via [NATS](https://nats.io/). Set the `NATS_URL` variable in your `.env` to the address of a running NATS server. When defined, the framework uses this server for message passing between components; otherwise events stay in-process.
+
 # Choosing Your LLMs
 The Settings page is the control center for selecting the Large Language Models (LLMs) that power Agent Zero.  You can choose different LLMs for different roles:
 
