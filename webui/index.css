@@ -3076,3 +3076,21 @@ nav ul li a img {
   border: 1px solid rgba(142, 142, 142, 0.1);
   border-radius: 0.3em;
 }
+
+/* Message grouping and collapsing */
+.message-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: var(--spacing-md);
+}
+
+.message.collapsed .msg-content,
+.message.collapsed .kvps-row,
+.message.collapsed .attachments-container {
+  display: none;
+}
+
+.msg-toggle {
+  margin-right: 0.5em;
+  cursor: pointer;
+}

@@ -2,6 +2,32 @@
 import { openImageModal } from "./image_modal.js";
 import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 
+const collapsedState = {};
+
+export function toggleMessages(type) {
+  collapsedState[type] = !collapsedState[type];
+  document.querySelectorAll(`.message[data-type="${type}"]`).forEach((el) => {
+    el.classList.toggle("collapsed", collapsedState[type]);
+    const t = el.querySelector(".msg-toggle");
+    if (t) t.textContent = collapsedState[type] ? "▶" : "▼";
+  });
+}
+
+function applyCollapse(messageDiv, type) {
+  messageDiv.dataset.type = type;
+  if (collapsedState[type]) messageDiv.classList.add("collapsed");
+
+  const heading = messageDiv.querySelector(".msg-heading");
+  if (heading) {
+    const toggle = document.createElement("span");
+    toggle.classList.add("msg-toggle");
+    toggle.textContent = collapsedState[type] ? "▶" : "▼";
+    heading.prepend(toggle);
+    heading.style.cursor = "pointer";
+    heading.addEventListener("click", () => toggleMessages(type));
+  }
+}
+
 function createCopyButton() {
   const button = document.createElement("button");
   button.className = "copy-button";
@@ -163,7 +189,7 @@ export function drawMessageDefault(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -175,6 +201,7 @@ export function drawMessageDefault(
     false,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageAgent(
@@ -192,7 +219,7 @@ export function drawMessageAgent(
     delete kvpsFlat["tool_args"];
   }
 
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -204,6 +231,7 @@ export function drawMessageAgent(
     false,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageResponse(
@@ -215,7 +243,7 @@ export function drawMessageResponse(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -227,6 +255,7 @@ export function drawMessageResponse(
     true,
     true
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageDelegation(
@@ -238,7 +267,7 @@ export function drawMessageDelegation(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -250,6 +279,7 @@ export function drawMessageDelegation(
     true,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageUser(
@@ -347,6 +377,7 @@ export function drawMessageUser(
   }
 
   messageContainer.appendChild(messageDiv);
+  applyCollapse(messageDiv, type);
 }
 
 export function drawMessageTool(
@@ -358,7 +389,7 @@ export function drawMessageTool(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -370,6 +401,7 @@ export function drawMessageTool(
     false,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageCodeExe(
@@ -381,7 +413,7 @@ export function drawMessageCodeExe(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -393,6 +425,7 @@ export function drawMessageCodeExe(
     false,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageBrowser(
@@ -404,7 +437,7 @@ export function drawMessageBrowser(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -416,6 +449,7 @@ export function drawMessageBrowser(
     false,
     false
   );
+  applyCollapse(div, type);
 }
 
 export function drawMessageAgentPlain(
@@ -428,7 +462,7 @@ export function drawMessageAgentPlain(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -441,6 +475,7 @@ export function drawMessageAgentPlain(
     false
   );
   messageContainer.classList.add("center-container");
+  applyCollapse(div, type);
 }
 
 export function drawMessageInfo(
@@ -473,7 +508,7 @@ export function drawMessageUtil(
   temp,
   kvps = null
 ) {
-  _drawMessage(
+  const div = _drawMessage(
     messageContainer,
     heading,
     content,
@@ -486,6 +521,7 @@ export function drawMessageUtil(
     false
   );
   messageContainer.classList.add("center-container");
+  applyCollapse(div, type);
 }
 
 export function drawMessageWarning(

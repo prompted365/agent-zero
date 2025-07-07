@@ -112,7 +112,7 @@ export async function sendMessage() {
         });
 
         // Render user message with attachments
-        setMessage(messageId, "user", "", message, false, {
+        setMessage(messageId, messageId, "user", "", message, false, {
           attachments: attachmentsWithUrls,
         });
 
@@ -234,9 +234,20 @@ function updateUserTime() {
 updateUserTime();
 setInterval(updateUserTime, 1000);
 
-function setMessage(id, type, heading, content, temp, kvps = null) {
+function setMessage(uniqueId, groupId, type, heading, content, temp, kvps = null) {
+  if (!groupId) groupId = uniqueId;
+
+  // Ensure group container exists
+  let groupContainer = document.getElementById(`message-group-${groupId}`);
+  if (!groupContainer) {
+    groupContainer = document.createElement("div");
+    groupContainer.id = `message-group-${groupId}`;
+    groupContainer.classList.add("message-group");
+    chatHistory.appendChild(groupContainer);
+  }
+
   // Search for the existing message container by id
-  let messageContainer = document.getElementById(`message-${id}`);
+  let messageContainer = document.getElementById(`message-${uniqueId}`);
 
   if (messageContainer) {
     // Don't re-render user messages
@@ -249,17 +260,17 @@ function setMessage(id, type, heading, content, temp, kvps = null) {
     // Create a new container if not found
     const sender = type === "user" ? "user" : "ai";
     messageContainer = document.createElement("div");
-    messageContainer.id = `message-${id}`;
+    messageContainer.id = `message-${uniqueId}`;
     messageContainer.classList.add("message-container", `${sender}-container`);
     if (temp) messageContainer.classList.add("message-temp");
   }
 
   const handler = msgs.getHandler(type);
-  handler(messageContainer, id, type, heading, content, temp, kvps);
+  handler(messageContainer, uniqueId, type, heading, content, temp, kvps);
 
   // If the container was found, it was already in the DOM, no need to append again
-  if (!document.getElementById(`message-${id}`)) {
-    chatHistory.appendChild(messageContainer);
+  if (!document.getElementById(`message-${uniqueId}`)) {
+    groupContainer.appendChild(messageContainer);
   }
 
   if (autoScroll) chatHistory.scrollTop = chatHistory.scrollHeight;
@@ -377,9 +388,11 @@ async function poll() {
     if (lastLogVersion != response.log_version) {
       updated = true;
       for (const log of response.logs) {
-        const messageId = log.id || log.no; // Use log.id if available
+        const groupId = log.id || log.no;
+        const uniqueId = log.no;
         setMessage(
-          messageId,
+          uniqueId,
+          groupId,
           log.type,
           log.heading,
           log.content,
