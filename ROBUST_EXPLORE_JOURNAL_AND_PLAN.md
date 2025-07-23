@@ -31,7 +31,7 @@ services:
     container_name: agent-zero
     image: frdel/agent-zero:latest
     volumes:
-      - ./agent-zero:/a0
+      - ../..:/a0
     ports:
       - "50080:80"
 ```
@@ -44,7 +44,7 @@ Update `docker/run/docker-compose.yml` to reference the correct path to the repo
 
 ```yaml
     volumes:
-      - ../../:/a0
+      - ../..:/a0
 ```
 
 assuming the compose file is executed from within `docker/run`. Adjust accordingly if using a different working directory.

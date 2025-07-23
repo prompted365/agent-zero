@@ -3,6 +3,6 @@ services:
     container_name: agent-zero
     image: frdel/agent-zero:latest
     volumes:
-      - ./agent-zero:/a0
+      - ../..:/a0
     ports:
       - "50080:80"

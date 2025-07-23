@@ -2,8 +2,9 @@
 
 The detailed exploration notes and deployment investigation live in
 `ROBUST_EXPLORE_JOURNAL_AND_PLAN.md` at the repository root. That file
-summarizes the project structure and highlights a docker-compose volume
-path issue which can prevent successful container startup.
+summarizes the project structure and originally highlighted a docker-compose
+volume path issue which prevented successful container startup. The compose
+file under `docker/run` now mounts `../..:/a0` to reference the repo root.
 
 This monorepo contains:
 
