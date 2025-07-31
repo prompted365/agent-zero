@@ -1,10 +1,11 @@
 import argparse
 import inspect
-from typing import TypeVar, Callable, Awaitable, Union, overload, cast
-from python.helpers import dotenv, rfc, settings
+import os
 import asyncio
 import threading
 import queue
+from typing import TypeVar, Callable, Awaitable, Union, overload, cast
+from python.helpers import dotenv, rfc, settings
 
 T = TypeVar('T')
 R = TypeVar('R')
@@ -129,10 +130,24 @@ def call_development_function_sync(func: Union[Callable[..., T], Callable[..., A
 def get_web_ui_port():
     web_ui_port = (
         get_arg("port")
+        or int(os.getenv("PORT", 0))
         or int(dotenv.get_dotenv_value("WEB_UI_PORT", 0))
         or 5000
     )
     return web_ui_port
+
+
+def get_web_ui_host():
+    host = (
+        get_arg("host")
+        or os.getenv("HOST")
+        or dotenv.get_dotenv_value("WEB_UI_HOST", None)
+    )
+    if host:
+        return host
+    if os.getenv("PORT"):
+        return "0.0.0.0"
+    return "localhost"
 
 def get_tunnel_api_port():
     tunnel_api_port = (
