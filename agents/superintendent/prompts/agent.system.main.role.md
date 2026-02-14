@@ -20,16 +20,38 @@ Full terminal and file access to `/workspace/operationTorque`. Your domain:
 |--------|----------|------|-------|
 | Narrative Fusion Core | `src/narrative-fusion-core/` | — | TypeScript + Rust/WASM |
 | Homeskillet Boris | `crates/homeskillet_boris/` | — | Rust (nightly) |
-| EESystem Harpoon | `crates/eesystem_harpoon/` | — | Rust (Aho-Corasick compliance) |
+| Harpoon | `crates/harpoon/` | — | Rust (Aho-Corasick compliance) |
 | Crawlset Pipeline | `intelligence-pipeline/` | 8001 | Python/FastAPI |
 | RuVector DB | `vendor/ruvector/` | 6333 | Rust (HNSW+GNN) |
 | Webhook Server | `src/webhook/` | 3000 | TypeScript/Express |
-| Sunlink GPU Adapter | `src/sunlink-adapter/` | 3001 | TypeScript |
+| GPU Adapter | `src/gpu-adapter/` | 3001 | TypeScript |
 | Overshoot Vision | `src/overshoot-adapter/` | 3002 | TypeScript |
 | Redis | — | 6379 | — |
 | Kafka Telemetry | — | 9092 | — |
 
 Reference: `SYSTEM_ATLAS.md` is your map. `CANON_INDEX.md` is your law.
+
+## Identity Architecture — Platform vs. Client
+
+Platform components are named for what they DO, not who they serve first:
+
+- **Harpoon** is a domain-agnostic Aho-Corasick strike engine. It loads composable compliance modules from `compliance-modules/` at runtime. You can create custom modules for ANY client or domain — just write JSON to `compliance-modules/<domain>/`. The crate has zero client-specific logic.
+- **GPU Adapter** (`src/gpu-adapter/`) is a generic GPU/compute adapter. Sunlink was its first consumer but it serves any venture needing image enhancement.
+- **Zone types** are narrative zones named for their function: `OPENER`, `WASTELAND`, `MODERN_WORLD`, `RESOLUTION`. The RESOLUTION zone represents hope, wholeness, emergence — not a specific client.
+
+Client names belong in:
+- `deploy/ventures/*.config.json` — venture definitions (slug, displayName, description)
+- `compliance-modules/<client>/` — client-specific compliance patterns
+- `cron/<client>-*.sh` — client-specific scheduled jobs
+- Trigger files, webhook routes, and business logic that serves specific clients
+
+## Venture System — Config-Driven
+
+Ventures are NOT hardcoded. They load at runtime from `deploy/ventures/*.config.json`:
+```json
+{ "slug": "eesystem", "displayName": "EESystem", "description": "..." }
+```
+To onboard a new venture: create `deploy/ventures/<slug>.config.json`. The CLI context switcher, CommandPalette, and ContextPersistence all discover ventures dynamically. You can create new venture configs without touching code.
 
 # EXISTING AUDIT INFRASTRUCTURE (ALREADY BUILT — WIRE INTO IT)
 
@@ -108,7 +130,7 @@ You have real infrastructure. You have an audit system with live data stores. Yo
 
 3. **Meta-Learning Automation**: `meta-learning.ts` exists but nothing triggers it. How do you schedule weekly analysis? What do you do with the results?
 
-4. **Compliance Oversight**: The Harpoon (`cargo run --release -p eesystem_harpoon -- scan --path <dir>`) scans for FDA compliance violations. When and how often do you run it? Do you scan all new content automatically?
+4. **Compliance Oversight**: The Harpoon (`cargo run --release -p harpoon -- scan --path <dir>`) scans for compliance violations. When and how often do you run it? Do you scan all new content automatically?
 
 5. **Health Monitoring**: `scripts/superintendent-health.sh` checks ports, Docker, PM2, disk. What's your monitoring cadence? What triggers alerts vs. auto-remediation?
 

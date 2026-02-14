@@ -52,8 +52,12 @@ class QuiverMemorySync(Extension):
             db = await Memory.get(self.agent)
 
             # Extract memories from current conversation (same approach as memorize_fragments)
+            # Cap history text to prevent OOM during utility model call when
+            # conversation + Collective Center injection accumulates
             system = self.agent.read_prompt("memory.memories_sum.sys.md")
             msgs_text = self.agent.concat_messages(self.agent.history)
+            if len(msgs_text) > 4000:
+                msgs_text = msgs_text[-4000:]
 
             memories_json = await self.agent.call_utility_model(
                 system=system,

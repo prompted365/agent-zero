@@ -30,7 +30,8 @@ RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334"
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
 DRIFT_THRESHOLD = float(os.environ.get("QUIVER_DRIFT_THRESHOLD", "0.60"))
 DRIFT_CHECK_INTERVAL = int(os.environ.get("QUIVER_DRIFT_INTERVAL", "1"))  # every N iterations
-TOP_K = 8
+TOP_K = 5
+MAX_COLLECTIVE_CENTER_CHARS = 800
 
 
 class QuiverDriftTracker(Extension):
@@ -132,9 +133,16 @@ class QuiverDriftTracker(Extension):
             heading=f"Quiver drift: {drift:.2f} (FAISS={len(faiss_texts)}, RuVector={len(ruvector_texts)}, overlap={len(intersection)})",
         )
 
-        # If drift exceeds threshold, inject collective center
+        # If drift exceeds threshold, inject collective center (capped to prevent OOM)
         if drift >= DRIFT_THRESHOLD and ruvector_unique_texts:
-            collective_center = "\n\n".join(ruvector_unique_texts)
+            parts = []
+            total = 0
+            for txt in ruvector_unique_texts:
+                if total + len(txt) > MAX_COLLECTIVE_CENTER_CHARS:
+                    break
+                parts.append(txt)
+                total += len(txt)
+            collective_center = "\n\n".join(parts) if parts else list(ruvector_unique_texts)[0][:MAX_COLLECTIVE_CENTER_CHARS]
 
             drift_alert = (
                 f"\n\n[QUIVER DRIFT ALERT: {drift:.2f}]\n"
