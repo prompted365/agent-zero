@@ -19,6 +19,7 @@ import json
 import asyncio
 import urllib.request
 import urllib.error
+import numpy as np
 from python.helpers.extension import Extension
 from python.helpers.memory import Memory
 from python.helpers import errors, settings
@@ -32,6 +33,7 @@ DRIFT_THRESHOLD = float(os.environ.get("QUIVER_DRIFT_THRESHOLD", "0.60"))
 DRIFT_CHECK_INTERVAL = int(os.environ.get("QUIVER_DRIFT_INTERVAL", "1"))  # every N iterations
 TOP_K = 5
 MAX_COLLECTIVE_CENTER_CHARS = 800
+CACHE_COSINE_THRESHOLD = 0.15  # reuse cached results if embedding shift < this
 
 
 class QuiverDriftTracker(Extension):
@@ -72,7 +74,25 @@ class QuiverDriftTracker(Extension):
         db = await Memory.get(self.agent)
 
         # Generate embedding for the query
-        embedding = list(db.db.embedding_function.embed_query(query[:1000]))
+        query_embedding = np.array(db.db.embedding_function.embed_query(query[:1000]))
+
+        # Check monologue-level cache: if query embedding hasn't shifted
+        # significantly, reuse prior FAISS/RuVector results (stores don't
+        # change mid-monologue — sync fires at monologue_end)
+        cache = loop_data.extras_persistent.get("_drift_cache")
+        if cache is not None:
+            cached_emb = np.array(cache["query_embedding"])
+            cos_dist = 1.0 - float(
+                np.dot(query_embedding, cached_emb)
+                / (np.linalg.norm(query_embedding) * np.linalg.norm(cached_emb) + 1e-9)
+            )
+            if cos_dist < CACHE_COSINE_THRESHOLD:
+                log_item.update(heading=f"Drift cache hit (cos_dist={cos_dist:.4f})")
+                # Re-expose structured data from cache for ecotone gate
+                loop_data.extras_persistent["quiver_drift_data"] = cache["drift_data"]
+                return
+
+        embedding = query_embedding.tolist()
 
         # Search FAISS
         faiss_docs = await db.search_similarity_threshold(
@@ -85,7 +105,6 @@ class QuiverDriftTracker(Extension):
 
         # Search RuVector
         ruvector_texts = set()
-        ruvector_unique = []
         try:
             payload = {
                 "embedding": embedding,
@@ -126,8 +145,30 @@ class QuiverDriftTracker(Extension):
             jaccard = len(intersection) / len(union)
             drift = 1.0 - jaccard
 
-        # Find what RuVector knows that FAISS doesn't
+        # Find unique texts from each system
         ruvector_unique_texts = ruvector_texts - faiss_texts
+        faiss_unique_texts = faiss_texts - ruvector_texts
+
+        # Expose structured drift data for downstream gates (ecotone integrity)
+        drift_data = {
+            "drift": drift,
+            "faiss_texts": list(faiss_texts),
+            "ruvector_texts": list(ruvector_texts),
+            "ruvector_unique_texts": list(ruvector_unique_texts),
+            "faiss_unique_texts": list(faiss_unique_texts),
+            "overlap_texts": list(intersection),
+        }
+
+        if drift >= DRIFT_THRESHOLD:
+            loop_data.extras_persistent["quiver_drift_data"] = drift_data
+        else:
+            loop_data.extras_persistent.pop("quiver_drift_data", None)
+
+        # Cache results + embedding for subsequent iterations in this monologue
+        loop_data.extras_persistent["_drift_cache"] = {
+            "query_embedding": embedding,
+            "drift_data": drift_data,
+        }
 
         log_item.update(
             heading=f"Quiver drift: {drift:.2f} (FAISS={len(faiss_texts)}, RuVector={len(ruvector_texts)}, overlap={len(intersection)})",
