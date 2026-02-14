@@ -2,7 +2,7 @@
 Ecotone Integrity Gate — Post-Response Drift Integration Validator
 
 Fires at message_loop_end (after the LLM response + tool processing).
-When quiver drift was high (>= 0.60), validates that the agent's response
+When quiver drift was high (>= threshold), validates that the agent's response
 actually integrated competing FAISS and RuVector perspectives rather than
 smoothing over the tension with diplomatic non-answers.
 
@@ -22,9 +22,10 @@ from python.helpers.extension import Extension
 from agent import LoopData
 from python.helpers.print_style import PrintStyle
 
-MAX_RETRIES = 2
+MAX_RETRIES = int(os.environ.get("ECOTONE_MAX_RETRIES", "2"))
+SMOOTHING_DRIFT_FLOOR = float(os.environ.get("ECOTONE_SMOOTHING_FLOOR", "0.70"))
 
-# Deterministic smoothing patterns — obvious collapses when drift > 0.70
+# Deterministic smoothing patterns — obvious collapses when drift > SMOOTHING_DRIFT_FLOOR
 SMOOTHING_PATTERNS = [
     re.compile(r"both.{0,20}valid", re.IGNORECASE),
     re.compile(r"both.{0,20}merit", re.IGNORECASE),
@@ -44,13 +45,12 @@ class EcotoneIntegrity(Extension):
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Only activate when drift tracker flagged high drift
+        # (quiver_drift_data is only set when drift >= QUIVER_DRIFT_THRESHOLD)
         drift_data = loop_data.extras_persistent.get("quiver_drift_data")
         if not drift_data:
             return
 
         drift = drift_data["drift"]
-        if drift < 0.60:
-            return
 
         # Skip tool-use iterations — no natural language to evaluate
         response = loop_data.last_response or ""
@@ -65,7 +65,7 @@ class EcotoneIntegrity(Extension):
 
         # Deterministic pre-check: catch obvious smoothing (saves utility tokens)
         verdict = None
-        if drift > 0.70:
+        if drift > SMOOTHING_DRIFT_FLOOR:
             verdict = self._check_smoothing(response)
 
         # Utility model check if pre-check didn't catch anything
@@ -100,7 +100,7 @@ class EcotoneIntegrity(Extension):
         if retries >= MAX_RETRIES:
             self.agent.context.log.log(
                 type="warning",
-                heading=f"Ecotone: SHALLOW_PASS after {MAX_RETRIES} retries (drift={drift:.2f})",
+                heading=f"Ecotone: SHALLOW_PASS after {retries} retries (drift={drift:.2f})",
             )
             self._log_epitaph(drift, verdict, retries, response, shallow_pass=True)
             loop_data.extras_persistent.pop("ecotone_retries", None)
