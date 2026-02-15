@@ -239,14 +239,16 @@ class QuiverDriftTracker(Extension):
             collective_center = "\n\n".join(parts) if parts else list(ruvector_unique_texts)[0][:MAX_COLLECTIVE_CENTER_CHARS]
 
             injection_parts.append(
-                f"\n\n[QUIVER DRIFT ALERT: {drift:.2f}]\n"
-                f"Your FAISS local memory and RuVector GNN topology are diverging.\n"
-                f"RuVector's self-learning graph has found {len(ruvector_unique_texts)} "
-                f"structurally relevant memories that your flat FAISS search missed.\n\n"
+                f"\n\n[QUIVER DRIFT: {drift:.2f}]\n"
+                f"Your FAISS episodic recall and RuVector GNN topology returned "
+                f"different results for this context. {len(ruvector_unique_texts)} "
+                f"topological memories were not found by flat similarity search.\n\n"
                 f"[COLLECTIVE CENTER — RuVector GNN unique context]\n"
                 f"{collective_center}\n"
                 f"[/COLLECTIVE CENTER]\n\n"
-                f"Re-center your reasoning against this topological context before responding."
+                f"Analyze this divergence: is each item undiscovered, stale, "
+                f"parallel-valid, noise, or an actionable gap? "
+                f"Use what's relevant. Divergence is normal — do not force reconciliation."
             )
 
         # If priors drift is high AND there are unique priors, inject prior anchor
@@ -264,7 +266,8 @@ class QuiverDriftTracker(Extension):
                 f"\n\n[PRIOR ANCHOR — Civilization Priors unique context]\n"
                 f"{prior_anchor}\n"
                 f"[/PRIOR ANCHOR]\n\n"
-                f"Ground your response against these long-lived narrative invariants."
+                f"These are long-lived narrative invariants. If your response "
+                f"diverges from them, note the departure — it may be valid."
             )
 
         if injection_parts:

@@ -147,13 +147,12 @@ class EcotoneIntegrity(Extension):
 
         feedback = (
             f"[ECOTONE GATE FAILURE: {verdict['failure_code']}] {verdict.get('evidence', '')}\n"
-            f"Your previous response was blocked. Integrate BOTH the FAISS "
-            f"episodic context AND the RuVector topological context in your "
-            f"next response. Do not acknowledge — integrate.\n"
-            f"You MUST reference and reconcile at least one item from "
-            f"FAISS-unique and one from RuVector-unique in your revised response.\n"
-            f"Example FAISS-unique item to integrate: '{example_faiss}'\n"
-            f"Example RuVector-unique item to integrate: '{example_ruvector}'"
+            f"Your previous response was blocked. You must ENGAGE with the "
+            f"divergent memory context — not reconcile it, but analyze it.\n"
+            f"For each unique item, categorize it: undiscovered, stale, "
+            f"parallel-valid, noise, or actionable gap. Use what's relevant.\n"
+            f"Example FAISS-unique item: '{example_faiss}'\n"
+            f"Example RuVector-unique item: '{example_ruvector}'"
         )
 
         loop_data.extras_persistent["ecotone_feedback"] = feedback
