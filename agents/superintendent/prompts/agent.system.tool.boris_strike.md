@@ -1,7 +1,7 @@
 ### boris_strike:
 Execute Homeskillet Boris parallel orchestration and Harpoon compliance scans.
 Boris is the Rust orchestration engine. Harpoon is the domain-agnostic Aho-Corasick compliance scanner that detects regulatory violations in content.
-Actions: scan, module_scan, winch, status
+Actions: scan, module_scan, session_scan, winch, status
 
 **Run Harpoon compliance scan on a directory:**
 ~~~json
@@ -61,6 +61,22 @@ Actions: scan, module_scan, winch, status
     "tool_args": {
         "action": "module_scan",
         "list_modules": true
+    }
+}
+~~~
+
+**Run session scan with drift companion pairing (pairs patterns with ecotone drift state):**
+~~~json
+{
+    "thoughts": ["Scanning session data for behavioral patterns paired with drift trajectories..."],
+    "tool_name": "boris_strike",
+    "tool_args": {
+        "action": "session_scan",
+        "target_path": "/workspace/operationTorque/audit-logs/ecotone/2026-02-15.jsonl",
+        "domain": "lifecycle.mogul",
+        "ecotone_log_dir": "/workspace/operationTorque/audit-logs/ecotone",
+        "session_date": "2026-02-15",
+        "output": "json"
     }
 }
 ~~~

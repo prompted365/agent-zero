@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import urllib.request
 import urllib.error
 from python.helpers.tool import Tool, Response
@@ -105,14 +106,25 @@ class CrawlsetExtract(Tool):
         return Response(message=f"Crawlset health: {json.dumps(result)}", break_loop=False)
 
     def _get(self, path):
-        req = urllib.request.Request(f"{CRAWLSET_URL}{path}")
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read().decode())
+        return self._request_with_retry(path, method="GET", timeout=15)
 
     def _post(self, path, data):
-        body = json.dumps(data).encode()
-        req = urllib.request.Request(f"{CRAWLSET_URL}{path}", data=body, method="POST")
-        req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
+        return self._request_with_retry(path, method="POST", data=data, timeout=30)
+
+    def _request_with_retry(self, path, method="GET", data=None, timeout=15, retries=1):
+        """Execute HTTP request with retry on transient failures."""
+        last_err = None
+        for attempt in range(1 + retries):
+            try:
+                req = urllib.request.Request(f"{CRAWLSET_URL}{path}", method=method)
+                req.add_header("Content-Type", "application/json")
+                if data is not None:
+                    body = json.dumps(data).encode()
+                    req.data = body
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode())
+            except (urllib.error.URLError, TimeoutError) as e:
+                last_err = e
+                if attempt < retries:
+                    time.sleep(1)
+        raise last_err

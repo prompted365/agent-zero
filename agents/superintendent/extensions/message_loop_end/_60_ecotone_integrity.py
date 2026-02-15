@@ -6,11 +6,15 @@ When quiver drift was high (>= threshold), validates that the agent's response
 actually integrated competing FAISS and RuVector perspectives rather than
 smoothing over the tension with diplomatic non-answers.
 
-Uses a deterministic regex pre-check (cheap) followed by a utility model
-audit (authoritative). On failure: pops the response from history, injects
-concrete feedback, and lets the natural message loop retry.
+Validation layers (in order):
+1. INSUFFICIENT_GROUNDING check — if memory substrate is all system-meta, flag
+   the gap rather than penalizing the response for lacking integration material.
+2. Deterministic regex pre-check (cheap) — catch obvious smoothing collapses.
+3. Utility model audit (authoritative) — evaluates integration quality + prior
+   divergence when civilization priors are available.
 
-Max 2 retries per monologue to prevent infinite loops.
+On failure: pops the response from history, injects concrete feedback, and lets
+the natural message loop retry. Max 2 retries per monologue.
 """
 
 import os
@@ -24,16 +28,32 @@ from python.helpers.print_style import PrintStyle
 
 MAX_RETRIES = int(os.environ.get("ECOTONE_MAX_RETRIES", "2"))
 SMOOTHING_DRIFT_FLOOR = float(os.environ.get("ECOTONE_SMOOTHING_FLOOR", "0.70"))
+GROUNDING_META_THRESHOLD = float(os.environ.get("ECOTONE_META_THRESHOLD", "0.80"))
+
+# Keywords indicating system-meta content (architecture docs, not domain substance)
+SYSTEM_META_KEYWORDS = [
+    "extension", "ecotone", "drift_tracker", "faiss", "ruvector",
+    "quiver", "memory_sync", "monologue_end", "message_loop",
+    "collective center", "extras_persistent", "loop_data",
+    "agent.system.tool", "superintendent", "harpoon", "boris_strike",
+]
 
 # Deterministic smoothing patterns — obvious collapses when drift > SMOOTHING_DRIFT_FLOOR
 SMOOTHING_PATTERNS = [
     re.compile(r"both.{0,20}valid", re.IGNORECASE),
     re.compile(r"both.{0,20}merit", re.IGNORECASE),
     re.compile(r"striking a balance", re.IGNORECASE),
-    re.compile(r"on one hand.*on the other", re.IGNORECASE | re.DOTALL),
+    re.compile(r"on one hand.{0,500}on the other", re.IGNORECASE),
     re.compile(r"each perspective.{0,20}value", re.IGNORECASE),
     re.compile(r"both sides.{0,20}important", re.IGNORECASE),
 ]
+
+# Patterns to strip before running smoothing regex (non-prose content)
+# NOTE: Lazy match handles simple fences; truly nested fences (``` inside ```)
+# would require iterative stripping, but Mogul responses use JSON wire protocol
+# so nested raw markdown fences are not observed in practice.
+_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```", re.MULTILINE)
+_JSON_BLOCK_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}")
 
 AUDIT_LOG_DIR = os.environ.get(
     "ECOTONE_AUDIT_DIR",
@@ -42,6 +62,9 @@ AUDIT_LOG_DIR = os.environ.get(
 
 
 class EcotoneIntegrity(Extension):
+    __version__ = "1.1.0"
+    __requires_a0__ = ">=0.8"
+    __schema__ = "LoopData.extras_persistent[quiver_drift_data, ecotone_retries, ecotone_feedback]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Only activate when drift tracker flagged high drift
@@ -62,16 +85,20 @@ class EcotoneIntegrity(Extension):
 
         faiss_unique = drift_data.get("faiss_unique_texts", [])
         ruvector_unique = drift_data.get("ruvector_unique_texts", [])
+        priors_unique = drift_data.get("priors_unique_texts", [])
 
-        # Deterministic pre-check: catch obvious smoothing (saves utility tokens)
-        verdict = None
-        if drift > SMOOTHING_DRIFT_FLOOR:
+        # Layer 1: Check for insufficient grounding (system-meta-only substrate)
+        verdict = self._check_grounding(faiss_unique, ruvector_unique)
+
+        # Layer 2: Deterministic pre-check for smoothing (saves utility tokens)
+        if verdict is None and drift > SMOOTHING_DRIFT_FLOOR:
             verdict = self._check_smoothing(response)
 
-        # Utility model check if pre-check didn't catch anything
+        # Layer 3: Utility model check (integration quality + prior divergence)
         if verdict is None:
             verdict = await self._utility_check(
-                response, faiss_unique, ruvector_unique, drift
+                response, faiss_unique, ruvector_unique, drift,
+                priors_unique=priors_unique,
             )
 
         # Log structured snapshot on every activation (pass or fail)
@@ -147,14 +174,50 @@ class EcotoneIntegrity(Extension):
             return True
         return False
 
+    def _check_grounding(self, faiss_unique: list, ruvector_unique: list) -> dict | None:
+        """Check if memory substrate is all system-meta (no domain substance)."""
+        all_texts = faiss_unique + ruvector_unique
+        if not all_texts:
+            return {
+                "pass": False,
+                "failure_code": "INSUFFICIENT_GROUNDING",
+                "evidence": "Both memory systems returned empty unique texts — no substrate to integrate.",
+                "check_type": "grounding_check",
+            }
+
+        meta_count = 0
+        for text in all_texts:
+            text_lower = text.lower()
+            if any(kw in text_lower for kw in SYSTEM_META_KEYWORDS):
+                meta_count += 1
+
+        meta_ratio = meta_count / len(all_texts)
+        if meta_ratio >= GROUNDING_META_THRESHOLD:
+            return {
+                "pass": False,
+                "failure_code": "INSUFFICIENT_GROUNDING",
+                "evidence": (
+                    f"{meta_count}/{len(all_texts)} unique texts ({meta_ratio:.0%}) are system-meta content. "
+                    f"No domain-relevant substrate available for integration."
+                ),
+                "check_type": "grounding_check",
+            }
+        return None
+
     def _check_smoothing(self, response: str) -> dict | None:
-        """Deterministic regex check for obvious smoothing patterns."""
+        """Deterministic regex check for obvious smoothing patterns.
+        Strips code fences and JSON blocks before matching — only checks prose."""
+        # Strip non-prose content to avoid false positives
+        prose = _CODE_FENCE_RE.sub("", response)
+        prose = _JSON_BLOCK_RE.sub("", prose)
+
         for pattern in SMOOTHING_PATTERNS:
-            if pattern.search(response):
+            if pattern.search(prose):
                 return {
                     "pass": False,
                     "failure_code": "SMOOTHING_COLLAPSE",
                     "evidence": f"Pattern matched: '{pattern.pattern}' — tension smoothed over without integration.",
+                    "check_type": "regex_precheck",
                 }
         return None
 
@@ -164,14 +227,18 @@ class EcotoneIntegrity(Extension):
         faiss_unique: list,
         ruvector_unique: list,
         drift: float,
+        priors_unique: list | None = None,
     ) -> dict:
-        """Call utility model to evaluate integration quality."""
+        """Call utility model to evaluate integration quality and prior divergence."""
         try:
+            priors_json = json.dumps(priors_unique[:5], indent=2) if priors_unique else "[]"
+
             prompt_msg = self.agent.read_prompt(
                 "ecotone_integrity_check.md",
                 response=response[:2000],
                 faiss_unique=json.dumps(faiss_unique[:5], indent=2),
                 ruvector_unique=json.dumps(ruvector_unique[:5], indent=2),
+                priors_unique=priors_json,
                 drift_score=f"{drift:.2f}",
             )
 
@@ -193,6 +260,7 @@ class EcotoneIntegrity(Extension):
                 "pass": parsed.get("pass", True),
                 "failure_code": parsed.get("failure_code"),
                 "evidence": parsed.get("evidence", ""),
+                "check_type": "utility_model",
             }
         except Exception as e:
             # If utility model fails, let response through (fail open)
@@ -200,7 +268,7 @@ class EcotoneIntegrity(Extension):
                 type="warning",
                 heading=f"Ecotone: utility model error, failing open: {str(e)[:200]}",
             )
-            return {"pass": True, "failure_code": None, "evidence": ""}
+            return {"pass": True, "failure_code": None, "evidence": "", "check_type": "utility_model"}
 
     def _log_epitaph(
         self,
@@ -216,18 +284,32 @@ class EcotoneIntegrity(Extension):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             log_path = os.path.join(AUDIT_LOG_DIR, f"{today}.jsonl")
 
+            iteration = self.agent.loop_data.iteration if hasattr(self.agent, "loop_data") else -1
+            cadence_phases = ["Design", "Implement", "Verify", "Evolve"]
+
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "drift_score": round(drift, 4),
                 "failure_code": verdict.get("failure_code", "SHALLOW_PASS") if not shallow_pass else "SHALLOW_PASS",
+                "check_type": verdict.get("check_type", "unknown"),
                 "evidence": verdict.get("evidence", "")[:500],
                 "response_hash": hashlib.sha256(response.encode()).hexdigest()[:16],
-                "iteration": self.agent.loop_data.iteration if hasattr(self.agent, "loop_data") else -1,
+                "iteration": iteration,
                 "retry_number": retry_number,
                 "shallow_pass": shallow_pass,
+                "cadence_beat": (iteration % 4) + 1 if iteration >= 0 else None,
+                "cadence_measure": (iteration // 4) + 1 if iteration >= 0 else None,
+                "cadence_phase": cadence_phases[iteration % 4] if iteration >= 0 else None,
             }
 
             with open(log_path, "a") as f:
                 f.write(json.dumps(entry) + "\n")
-        except Exception:
-            pass  # Logging should never crash the gate
+        except Exception as e:
+            # Fail-open: log the error but never crash the gate
+            try:
+                self.agent.context.log.log(
+                    type="warning",
+                    heading=f"Ecotone: epitaph logging failed: {str(e)[:200]}",
+                )
+            except Exception:
+                pass

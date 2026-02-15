@@ -31,6 +31,9 @@ DIMENSION = 384  # all-MiniLM-L6-v2 output dimension
 
 
 class QuiverMemorySync(Extension):
+    __version__ = "1.0.0"
+    __requires_a0__ = ">=0.8"
+    __schema__ = "LoopData (read-only, no extras_persistent writes)"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         set = settings.get_settings()

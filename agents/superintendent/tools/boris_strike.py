@@ -25,13 +25,15 @@ class BorisStrike(Tool):
                 return await self._harpoon_scan(target_path, **kwargs)
             elif action == "module_scan":
                 return await self._harpoon_module_scan(target_path, **kwargs)
+            elif action == "session_scan":
+                return await self._harpoon_session_scan(target_path, **kwargs)
             elif action == "winch":
                 return await self._boris_winch(**kwargs)
             elif action == "status":
                 return await self._check_status(**kwargs)
             else:
                 return Response(
-                    message=f"Unknown action: {action}. Use: scan, module_scan, winch, status",
+                    message=f"Unknown action: {action}. Use: scan, module_scan, session_scan, winch, status",
                     break_loop=False,
                 )
         except Exception as e:
@@ -120,6 +122,61 @@ class BorisStrike(Tool):
         except subprocess.TimeoutExpired:
             return Response(
                 message=f"Harpoon module scan timed out after 120s on {target_path}.",
+                break_loop=False,
+            )
+        except FileNotFoundError:
+            return Response(
+                message="cargo not found. Install Rust toolchain.",
+                break_loop=False,
+            )
+
+    async def _harpoon_session_scan(self, target_path, **kwargs):
+        """Run Harpoon session scan with drift companion pairing."""
+        from datetime import datetime as dt
+
+        modules_dir = kwargs.get("modules_dir", f"{self.WORKSPACE}/compliance-modules")
+        domain = kwargs.get("domain", "lifecycle.mogul")
+        ecotone_log_dir = kwargs.get("ecotone_log_dir", f"{self.WORKSPACE}/audit-logs/ecotone")
+        session_date = kwargs.get("session_date", dt.utcnow().strftime("%Y-%m-%d"))
+        output_format = kwargs.get("output", "json")
+
+        cmd = [
+            "cargo", "run", "--release",
+            "--", "session-scan",
+            "--path", target_path,
+            "--modules-dir", modules_dir,
+            "--ecotone-log-dir", ecotone_log_dir,
+            "--session-date", session_date,
+            "--output", output_format,
+        ]
+
+        if domain:
+            cmd.extend(["--domain", domain])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=self.HARPOON_CRATE,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            output = result.stdout or ""
+            errors = result.stderr or ""
+
+            if result.returncode == 0:
+                msg = f"Harpoon session scan completed:\n{output}"
+                if errors:
+                    msg += f"\nLog:\n{errors}"
+            elif result.returncode == 2:
+                msg = f"CRITICAL VIOLATIONS found in session:\n{output}\n{errors}"
+            else:
+                msg = f"Harpoon session scan failed (exit {result.returncode}):\n{output}\n{errors}"
+
+            return Response(message=msg, break_loop=False)
+        except subprocess.TimeoutExpired:
+            return Response(
+                message=f"Harpoon session scan timed out after 120s on {target_path}.",
                 break_loop=False,
             )
         except FileNotFoundError:
