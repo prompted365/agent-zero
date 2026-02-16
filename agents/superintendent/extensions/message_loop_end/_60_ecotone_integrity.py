@@ -1,8 +1,8 @@
 """
-Ecotone Integrity Gate — Post-Response Drift Integration Validator
+Ecotone Integrity Gate — Post-Response Anchor Tension Integration Validator
 
 Fires at message_loop_end (after the LLM response + tool processing).
-When quiver drift was high (>= threshold), validates that the agent's response
+When anchor tension was high (>= threshold), validates that the agent's response
 actually integrated competing FAISS and RuVector perspectives rather than
 smoothing over the tension with diplomatic non-answers.
 
@@ -67,8 +67,8 @@ class EcotoneIntegrity(Extension):
     __schema__ = "LoopData.extras_persistent[quiver_drift_data, ecotone_retries, ecotone_feedback]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
-        # Only activate when drift tracker flagged high drift
-        # (quiver_drift_data is only set when drift >= QUIVER_DRIFT_THRESHOLD)
+        # Only activate when tension tracker flagged high tension
+        # (quiver_drift_data is only set when topic_novelty >= QUIVER_DRIFT_THRESHOLD)
         drift_data = loop_data.extras_persistent.get("quiver_drift_data")
         if not drift_data:
             return
@@ -83,9 +83,9 @@ class EcotoneIntegrity(Extension):
         # Initialize retry counter
         retries = loop_data.extras_persistent.get("ecotone_retries", 0)
 
-        faiss_unique = drift_data.get("faiss_unique_texts", [])
-        ruvector_unique = drift_data.get("ruvector_unique_texts", [])
-        priors_unique = drift_data.get("priors_unique_texts", [])
+        faiss_unique = drift_data.get("faiss_texts", [])
+        ruvector_unique = drift_data.get("ruvector_texts", [])
+        priors_unique = drift_data.get("pattern_anchors", [])
 
         # Layer 1: Check for insufficient grounding (system-meta-only substrate)
         verdict = self._check_grounding(faiss_unique, ruvector_unique)
@@ -102,7 +102,7 @@ class EcotoneIntegrity(Extension):
             )
 
         # Log structured snapshot on every activation (pass or fail)
-        log_heading = f"Ecotone Integrity: {'PASS' if verdict['pass'] else 'FAIL'}"
+        log_heading = f"Ecotone Integrity: {'PASS' if verdict['pass'] else 'FAIL'} (tension={drift:.2f})"
         if not verdict["pass"]:
             log_heading += f" [{verdict['failure_code']}]"
 
@@ -154,6 +154,11 @@ class EcotoneIntegrity(Extension):
             f"Example FAISS-unique item: '{example_faiss}'\n"
             f"Example RuVector-unique item: '{example_ruvector}'"
         )
+
+        pattern_anchors = drift_data.get("pattern_anchors", [])
+        if pattern_anchors:
+            anchor_terms = [a["term"] for a in pattern_anchors[:5]]
+            feedback += f"\nPattern resonance detected: {', '.join(anchor_terms)}. Consider how these civilization patterns relate to your response."
 
         loop_data.extras_persistent["ecotone_feedback"] = feedback
         loop_data.extras_persistent["ecotone_retries"] = retries + 1
@@ -286,6 +291,10 @@ class EcotoneIntegrity(Extension):
             iteration = self.agent.loop_data.iteration if hasattr(self.agent, "loop_data") else -1
             cadence_phases = ["Design", "Implement", "Verify", "Evolve"]
 
+            # Count pattern anchors from drift data if available
+            drift_data = self.agent.loop_data.extras_persistent.get("quiver_drift_data", {}) if hasattr(self.agent, "loop_data") else {}
+            pattern_anchor_count = len(drift_data.get("pattern_anchors", []))
+
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "drift_score": round(drift, 4),
@@ -296,6 +305,7 @@ class EcotoneIntegrity(Extension):
                 "iteration": iteration,
                 "retry_number": retry_number,
                 "shallow_pass": shallow_pass,
+                "pattern_anchors": pattern_anchor_count,
                 "cadence_beat": (iteration % 4) + 1 if iteration >= 0 else None,
                 "cadence_measure": (iteration // 4) + 1 if iteration >= 0 else None,
                 "cadence_phase": cadence_phases[iteration % 4] if iteration >= 0 else None,

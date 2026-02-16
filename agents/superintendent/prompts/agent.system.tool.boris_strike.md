@@ -1,12 +1,12 @@
 ### boris_strike:
-Execute Homeskillet Boris parallel orchestration and Harpoon compliance scans.
-Boris is the Rust orchestration engine. Harpoon is the domain-agnostic Aho-Corasick compliance scanner that detects regulatory violations in content.
+Execute Homeskillet Boris parallel orchestration and Harpoon pattern anchor scans.
+Boris is the Rust orchestration engine. Harpoon is the domain-agnostic Aho-Corasick pattern anchor engine that identifies fixed points (anchors) in text pattern-space.
 Actions: scan, module_scan, session_scan, winch, status
 
-**Run Harpoon compliance scan on a directory:**
+**Run Harpoon pattern anchor scan on a directory:**
 ~~~json
 {
-    "thoughts": ["Scanning content for compliance violations..."],
+    "thoughts": ["Scanning content for pattern anchors..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "scan",
@@ -18,7 +18,7 @@ Actions: scan, module_scan, session_scan, winch, status
 **Run composable module scan (all always_on modules):**
 ~~~json
 {
-    "thoughts": ["Running modular compliance scan with all active modules..."],
+    "thoughts": ["Running modular pattern anchor scan with all active modules..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "module_scan",
@@ -30,7 +30,7 @@ Actions: scan, module_scan, session_scan, winch, status
 **Run module scan filtered by domain:**
 ~~~json
 {
-    "thoughts": ["Scanning with canon governance modules..."],
+    "thoughts": ["Anchoring against canon governance patterns..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "module_scan",
@@ -43,7 +43,7 @@ Actions: scan, module_scan, session_scan, winch, status
 **Run module scan with specific modules:**
 ~~~json
 {
-    "thoughts": ["Scanning with solar claims compliance..."],
+    "thoughts": ["Anchoring against solar claims patterns..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "module_scan",
@@ -53,10 +53,10 @@ Actions: scan, module_scan, session_scan, winch, status
 }
 ~~~
 
-**List all available compliance modules:**
+**List all available pattern modules:**
 ~~~json
 {
-    "thoughts": ["Listing available compliance modules..."],
+    "thoughts": ["Listing available pattern modules..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "module_scan",
@@ -65,10 +65,10 @@ Actions: scan, module_scan, session_scan, winch, status
 }
 ~~~
 
-**Run session scan with drift companion pairing (pairs patterns with ecotone drift state):**
+**Run session scan with anchor tension pairing (pairs pattern anchors with ecotone state):**
 ~~~json
 {
-    "thoughts": ["Scanning session data for behavioral patterns paired with drift trajectories..."],
+    "thoughts": ["Scanning session data for pattern anchors paired with tension trajectories..."],
     "tool_name": "boris_strike",
     "tool_args": {
         "action": "session_scan",

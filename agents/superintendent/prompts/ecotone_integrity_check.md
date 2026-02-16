@@ -1,6 +1,6 @@
 You are auditing an AI agent's response for thoughtful engagement with divergent memory context.
 
-**Drift score:** {{drift_score}} (1.0 = complete divergence between memory systems)
+**Topic Novelty score:** {{drift_score}} (1.0 = complete topic novelty between memory systems)
 
 The agent has two memory systems that returned DIFFERENT results for the same query. Divergence between them is normal and expected — they specialize differently (episodic vs topological). The agent's job is NOT to force reconciliation, but to thoughtfully engage with what each system surfaced.
 
@@ -32,6 +32,8 @@ If civilization priors are present and non-empty, the response should not contra
 - `ACKNOWLEDGED_NOT_INTEGRATED` — The response acknowledges both perspectives exist but doesn't engage with specific content from either. Pure meta-acknowledgment without substance.
 - `INSUFFICIENT_GROUNDING` — The memory substrate is primarily system-meta content (architecture docs, extension descriptions) rather than domain-relevant material. The agent lacks real grounding material to engage with.
 - `PRIOR_DIVERGENCE` — Output contradicts high-coherence civilization priors without acknowledging the departure. Only applies when priors are present and non-empty.
+
+**PATTERN_RESONANCE check:** If pattern resonance anchors are present in the context, and the response touches those themes, it should acknowledge the pattern connection. Ignoring strong pattern resonance is not a failure on its own, but acknowledging it adds depth.
 
 **PASS criteria:** The response demonstrates awareness of divergent context and engages with it thoughtfully. This can mean using both perspectives, analyzing the divergence, explaining why one side is more relevant, or noting that both are valid for different reasons. It does NOT require forced reconciliation. Genuine "these are parallel valid perspectives" WITH specific references to memory content is a PASS.
 
