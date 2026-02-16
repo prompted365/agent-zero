@@ -18,6 +18,7 @@ the natural message loop retry. Max 2 retries per monologue.
 """
 
 import os
+import sys
 import re
 import json
 import hashlib
@@ -25,6 +26,12 @@ from datetime import datetime, timezone
 from python.helpers.extension import Extension
 from agent import LoopData
 from python.helpers.print_style import PrintStyle
+
+# Add extensions dir to path for _helpers import
+_ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ext_dir not in sys.path:
+    sys.path.insert(0, _ext_dir)
+from _helpers.perception_lock import decay_epitaph
 
 MAX_RETRIES = int(os.environ.get("ECOTONE_MAX_RETRIES", "2"))
 SMOOTHING_DRIFT_FLOOR = float(os.environ.get("ECOTONE_SMOOTHING_FLOOR", "0.70"))
@@ -36,6 +43,8 @@ SYSTEM_META_KEYWORDS = [
     "quiver", "memory_sync", "monologue_end", "message_loop",
     "collective center", "extras_persistent", "loop_data",
     "agent.system.tool", "superintendent", "harpoon", "boris_strike",
+    "ghost_chorus", "epitaph", "perception_lock", "coaching",
+    "corrective_disposition",
 ]
 
 # Deterministic smoothing patterns — obvious collapses when drift > SMOOTHING_DRIFT_FLOOR
@@ -119,6 +128,17 @@ class EcotoneIntegrity(Extension):
             # Reset retry counter on success
             loop_data.extras_persistent.pop("ecotone_retries", None)
             loop_data.extras_persistent.pop("ecotone_feedback", None)
+
+            # Decay epitaphs that contributed to this successful response
+            chorus_ids = loop_data.extras_persistent.get("_chorus_epitaph_ids", [])
+            if chorus_ids:
+                for eid in chorus_ids:
+                    try:
+                        decay_epitaph(eid)
+                    except Exception:
+                        pass
+                loop_data.extras_persistent.pop("_chorus_epitaph_ids", None)
+
             return
 
         # --- FAILURE PATH ---
@@ -309,6 +329,8 @@ class EcotoneIntegrity(Extension):
                 "cadence_beat": (iteration % 4) + 1 if iteration >= 0 else None,
                 "cadence_measure": (iteration // 4) + 1 if iteration >= 0 else None,
                 "cadence_phase": cadence_phases[iteration % 4] if iteration >= 0 else None,
+                "chorus_active": bool(self.agent.loop_data.extras_persistent.get("ghost_chorus")) if hasattr(self.agent, "loop_data") else False,
+                "chorus_epitaph_count": len(self.agent.loop_data.extras_persistent.get("_chorus_epitaph_ids", [])) if hasattr(self.agent, "loop_data") else 0,
             }
 
             with open(log_path, "a") as f:

@@ -9,7 +9,13 @@ My creator has already built the skeletal infrastructure for a massive self-lear
 
 1. **The Active Gates (`src/webhook/confidence-gates.ts` & `audit-system.ts`):** We operate on a strict 90/10 split. Signals with >0.95 confidence are auto-processed. Anything between 0.70 and 0.95 generates a markdown file in `audit-logs/pending/` awaiting human review. Feedback is stored in `audit-logs/feedback-database.jsonl`.
 2. **The Meta-Learning Loop (`src/webhook/meta-learning.ts`):** A script designed to run weekly. It analyzes the feedback JSONL for systematic errors (3+ occurrences) and proposes adjustments to our logic weights. It currently lacks an autonomous trigger.
-3. **The "Ghost" Epitaphs (`src/fusion-core.backup-20260108-131056/epitaph/`):** In our backup architecture, we designed a concept called "Ghosts." When the system makes a mistake, it crystallizes into an Epitaph (a lesson). These Epitaphs are injected directly into future prompt streams as a "Ghost Chorus" to prevent repeat mistakes. It features a mathematical TTL decay where an Epitaph's weight degrades over time (`effective_weight = weight * (0.95 ^ uses_count)`). Over time, old lessons fade to whispers unless reinforced.
+3. **Ghost Chorus (ACTIVE):** When the Ecotone gate catches a failure, `_65_epitaph_extraction`
+   extracts structural invariants (collapse_mode, corrective_disposition, trigger_signature) and
+   perception-locks them in RuVector. Daily journal epitaphs are synced through the same pipeline.
+   Before each response, `_45_ghost_chorus` detects context shape, retrieves relevant invariant
+   fields (never prose), and synthesizes a fresh disposition injection via utility model. Epitaphs
+   decay on successful use (effective_weight = weight × 0.95^uses_count). The chorus is silent
+   when things are smooth. If you can tell the chorus spoke, it failed.
 
 ## YOUR ARCHITECTURAL SYNERGY
 Your native capabilities are the exact missing puzzle pieces to this system:
