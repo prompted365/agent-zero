@@ -139,6 +139,19 @@ class EcotoneIntegrity(Extension):
                         pass
                 loop_data.extras_persistent.pop("_chorus_epitaph_ids", None)
 
+            # Telemetry: chorus_outcome (pass)
+            try:
+                from _helpers.chorus_telemetry import log_chorus_event
+                log_chorus_event("chorus_outcome", {
+                    "chorus_was_active": bool(loop_data.extras_persistent.get("ghost_chorus")),
+                    "epitaph_ids": chorus_ids,
+                    "gate_result": "pass",
+                    "failure_code": None,
+                    "drift_score": round(drift, 4),
+                })
+            except Exception:
+                pass
+
             return
 
         # --- FAILURE PATH ---
@@ -150,12 +163,37 @@ class EcotoneIntegrity(Extension):
                 heading=f"Ecotone: SHALLOW_PASS after {retries} retries (drift={drift:.2f})",
             )
             self._log_epitaph(drift, verdict, retries, response, shallow_pass=True)
+            # Telemetry: chorus_outcome (shallow_pass)
+            try:
+                from _helpers.chorus_telemetry import log_chorus_event
+                log_chorus_event("chorus_outcome", {
+                    "chorus_was_active": bool(loop_data.extras_persistent.get("ghost_chorus")),
+                    "epitaph_ids": loop_data.extras_persistent.get("_chorus_epitaph_ids", []),
+                    "gate_result": "shallow_pass",
+                    "failure_code": "SHALLOW_PASS",
+                    "drift_score": round(drift, 4),
+                })
+            except Exception:
+                pass
             loop_data.extras_persistent.pop("ecotone_retries", None)
             loop_data.extras_persistent.pop("ecotone_feedback", None)
             return
 
         # Log epitaph
         self._log_epitaph(drift, verdict, retries, response)
+
+        # Telemetry: chorus_outcome (fail)
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            log_chorus_event("chorus_outcome", {
+                "chorus_was_active": bool(loop_data.extras_persistent.get("ghost_chorus")),
+                "epitaph_ids": loop_data.extras_persistent.get("_chorus_epitaph_ids", []),
+                "gate_result": "fail",
+                "failure_code": verdict.get("failure_code"),
+                "drift_score": round(drift, 4),
+            })
+        except Exception:
+            pass
 
         # Pop the failed response from history
         if self.agent.history.current.messages:

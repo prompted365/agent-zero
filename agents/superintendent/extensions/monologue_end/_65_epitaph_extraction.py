@@ -26,7 +26,7 @@ from python.helpers.log import LogItem
 _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
-from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs
+from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs, _ruvector_post, COLLECTION, DIMENSION
 
 # failure_code → context_shape (deterministic mapping)
 FAILURE_SHAPE_MAP = {
@@ -124,12 +124,62 @@ class EpitaphExtraction(Extension):
                 content=err,
             )
 
+        # Volume snapshot: lightweight epitaph pool health signal
+        self._emit_volume_snapshot()
+
         log_item.update(
             heading=(
                 f"Epitaph extraction: {epitaphs_created} from ecotone, "
                 f"{journal_synced} from journal"
             ),
         )
+
+    def _emit_volume_snapshot(self):
+        """Lightweight epitaph pool health signal — runs once per monologue."""
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+
+            results = _ruvector_post("/search", {
+                "embedding": [0.0] * DIMENSION,
+                "top_k": 200,
+                "collection": COLLECTION,
+            })
+            epitaphs = [
+                r for r in results.get("results", [])
+                if r.get("metadata", {}).get("type") == "epitaph"
+            ]
+
+            now = datetime.now(timezone.utc)
+            ages = []
+            weights = []
+            active = 0
+            for ep in epitaphs:
+                meta = ep.get("metadata", {})
+                eff_w = meta.get("effective_weight", 0)
+                weights.append(eff_w)
+                if eff_w >= 0.1:
+                    active += 1
+                created = meta.get("created_at", "")
+                if created:
+                    try:
+                        age = (now - datetime.fromisoformat(
+                            created.replace("Z", "+00:00")
+                        )).total_seconds() / 86400
+                        ages.append(age)
+                    except (ValueError, TypeError):
+                        pass
+
+            log_chorus_event("volume_snapshot", {
+                "total_epitaphs": len(epitaphs),
+                "active_count": active,
+                "dormant_count": len(epitaphs) - active,
+                "mean_age_days": round(sum(ages) / len(ages), 1) if ages else 0,
+                "max_age_days": round(max(ages), 1) if ages else 0,
+                "mean_weight": round(sum(weights) / len(weights), 3) if weights else 0,
+                "weight_below_half": sum(1 for w in weights if w < 0.5),
+            })
+        except Exception:
+            pass  # volume snapshot is purely observational — never crash
 
     def _collect_ecotone_failures(self, loop_data: LoopData) -> list[dict]:
         """

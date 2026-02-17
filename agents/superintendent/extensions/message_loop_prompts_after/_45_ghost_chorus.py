@@ -42,7 +42,8 @@ _IDENTITY_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
-# Intensity calibration: context_shape → (max_epitaphs, synthesis_mode)
+# Intensity calibration: chorus_mode → (max_epitaphs, synthesis_mode)
+# chorus_mode is an operational state separate from epitaph context_shape archetypes.
 INTENSITY_MAP = {
     "steady_state": (0, "none"),
     "novel_territory": (1, "brief"),
@@ -63,17 +64,29 @@ class GhostChorus(Extension):
         if not set.get("memory_recall_enabled", True):
             return
 
-        # Step 1: Context shape detection (deterministic, no model call)
-        context_shape = self._detect_context_shape(loop_data)
+        # Step 1: Chorus mode detection (deterministic, no model call)
+        # chorus_mode is operational state; distinct from epitaph context_shape archetypes
+        chorus_mode = self._detect_chorus_mode(loop_data)
 
-        if context_shape == "steady_state":
+        if chorus_mode == "steady_state":
             # Chorus is silent when smooth
             loop_data.extras_persistent.pop("ghost_chorus", None)
             loop_data.extras_persistent.pop("_chorus_epitaph_ids", None)
+            # Telemetry: sample 10% of silence events to avoid flooding
+            import random
+            if random.random() < 0.1:
+                try:
+                    from _helpers.chorus_telemetry import log_chorus_event
+                    log_chorus_event("chorus_silence", {
+                        "chorus_mode": "steady_state",
+                        "reason": "default",
+                    })
+                except Exception:
+                    pass
             return
 
         max_epitaphs, synthesis_mode = INTENSITY_MAP.get(
-            context_shape, (1, "brief")
+            chorus_mode, (1, "brief")
         )
 
         # Step 2: Epitaph retrieval
@@ -93,19 +106,29 @@ class GhostChorus(Extension):
         except Exception:
             return
 
+        # Pass chorus_mode as context_shape for shape-match bonus on overlapping values
+        # (novel_territory, converging_constraints, identity_pressure exist in both vocabularies)
         epitaphs = retrieve_coaching_epitaphs(
             embedding=embedding,
-            context_shape=context_shape,
+            context_shape=chorus_mode,
             top_k=max_epitaphs,
         )
 
         if not epitaphs:
             # Correct for early days — nothing to say yet
+            try:
+                from _helpers.chorus_telemetry import log_chorus_event
+                log_chorus_event("chorus_silence", {
+                    "chorus_mode": chorus_mode,
+                    "reason": "no_epitaphs",
+                })
+            except Exception:
+                pass
             return
 
         log_item = self.agent.context.log.log(
             type="util",
-            heading=f"Ghost Chorus: {context_shape} — {len(epitaphs)} epitaphs retrieved",
+            heading=f"Ghost Chorus: {chorus_mode} — {len(epitaphs)} epitaphs retrieved",
         )
 
         # Step 3: Build invariants block for synthesis prompt
@@ -140,7 +163,7 @@ class GhostChorus(Extension):
         # Step 4: Coaching synthesis via utility model
         prompt_msg = self.agent.read_prompt(
             "ghost_chorus_synthesis.md",
-            context_shape=context_shape,
+            context_shape=chorus_mode,
             drift_band=drift_band,
             pattern_anchors_section=pattern_section,
             invariants_block=invariants_block,
@@ -167,17 +190,35 @@ class GhostChorus(Extension):
             ep["id"] for ep in epitaphs if ep.get("id")
         ]
 
+        # Telemetry: chorus_activation
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            log_chorus_event("chorus_activation", {
+                "chorus_mode": chorus_mode,
+                "epitaph_ids": [ep["id"] for ep in epitaphs if ep.get("id")],
+                "epitaph_ages": [ep.get("age_days", 0) for ep in epitaphs],
+                "epitaph_weights": [ep.get("effective_weight", 0) for ep in epitaphs],
+                "hypothetical_age_weights": [ep.get("hypothetical_age_weight", 0) for ep in epitaphs],
+                "drift_band": drift_band,
+                "synthesis_length": len(coaching),
+                "topic_novelty": topic_novelty,
+                "pattern_anchor_count": len(pattern_anchors),
+            })
+        except Exception:
+            pass
+
         log_item.update(
             heading=(
-                f"Ghost Chorus [{context_shape}]: injected {len(epitaphs)} dispositions "
+                f"Ghost Chorus [{chorus_mode}]: injected {len(epitaphs)} dispositions "
                 f"(drift_band={drift_band})"
             ),
         )
 
-    def _detect_context_shape(self, loop_data: LoopData) -> str:
+    def _detect_chorus_mode(self, loop_data: LoopData) -> str:
         """
-        Deterministic context shape detection. No model call.
+        Deterministic chorus mode detection. No model call.
         Priority order matters — most specific wins.
+        Chorus mode is an operational state, distinct from epitaph context_shape archetypes.
         """
         extras = loop_data.extras_persistent
 

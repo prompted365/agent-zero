@@ -155,6 +155,18 @@ def create_epitaph(
 
     try:
         _ruvector_post("/documents", payload)
+        # Telemetry: epitaph_created
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            log_chorus_event("epitaph_created", {
+                "epitaph_id": doc_id,
+                "context_shape": context_shape,
+                "failure_code": failure_code,
+                "source": source,
+                "weight": weight,
+            })
+        except Exception:
+            pass
         return doc_id
     except (urllib.error.URLError, Exception):
         return None
@@ -195,6 +207,18 @@ def retrieve_coaching_epitaphs(
         shape_bonus = 1.0 if (context_shape and meta.get("context_shape") == context_shape) else 0.0
         rank_score = shape_bonus * 0.2 + eff_weight * score
 
+        # Temporal fields — logged for telemetry, NOT applied to scoring
+        created = meta.get("created_at", "")
+        age_days = 0.0
+        if created:
+            try:
+                created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - created_dt).total_seconds() / 86400
+            except (ValueError, TypeError):
+                pass
+        # Hypothetical age-adjusted weight — observed only, not used for rank_score
+        hypo_age_weight = eff_weight * (0.98 ** age_days)
+
         candidates.append({
             "id": r.get("id"),
             "score": score,
@@ -210,10 +234,30 @@ def retrieve_coaching_epitaphs(
             "uses_count": meta.get("uses_count", 0),
             "failure_code": meta.get("failure_code", ""),
             "source": meta.get("source", ""),
+            "age_days": round(age_days, 1),
+            "hypothetical_age_weight": round(hypo_age_weight, 4),
+            "last_seen": meta.get("last_seen", ""),
         })
 
     candidates.sort(key=lambda c: c["rank_score"], reverse=True)
-    return candidates[:top_k]
+    selected = candidates[:top_k]
+
+    # Telemetry: emit epitaph_retrieved for each returned candidate
+    try:
+        from _helpers.chorus_telemetry import log_chorus_event
+        for ep in selected:
+            log_chorus_event("epitaph_retrieved", {
+                "epitaph_id": ep["id"],
+                "rank_score": ep["rank_score"],
+                "age_days": ep["age_days"],
+                "hypothetical_age_weight": ep["hypothetical_age_weight"],
+                "effective_weight": ep["effective_weight"],
+                "recurrence_count": ep["recurrence_count"],
+            })
+    except Exception:
+        pass
+
+    return selected
 
 
 def decay_epitaph(doc_id: str) -> bool:
@@ -247,6 +291,25 @@ def decay_epitaph(doc_id: str) -> bool:
     }
     try:
         _ruvector_post("/documents", payload)
+        # Telemetry: epitaph_decayed
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            created = meta.get("created_at", "")
+            age_days = 0.0
+            if created:
+                try:
+                    created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    age_days = (datetime.now(timezone.utc) - created_dt).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    pass
+            log_chorus_event("epitaph_decayed", {
+                "epitaph_id": doc_id,
+                "new_effective_weight": round(new_eff, 6),
+                "uses_count": uses,
+                "age_days": round(age_days, 1),
+            })
+        except Exception:
+            pass
         return True
     except (urllib.error.URLError, Exception):
         return False
@@ -285,6 +348,25 @@ def boost_epitaph(doc_id: str, boost: float = 0.05) -> bool:
     }
     try:
         _ruvector_post("/documents", payload)
+        # Telemetry: epitaph_boosted
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            last_seen = meta.get("last_seen", "")
+            days_since_last = 0.0
+            if last_seen:
+                try:
+                    last_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                    days_since_last = (datetime.now(timezone.utc) - last_dt).total_seconds() / 86400
+                except (ValueError, TypeError):
+                    pass
+            log_chorus_event("epitaph_boosted", {
+                "epitaph_id": doc_id,
+                "new_weight": round(weight, 4),
+                "recurrence_count": recurrence,
+                "days_since_last": round(days_since_last, 1),
+            })
+        except Exception:
+            pass
         return True
     except (urllib.error.URLError, Exception):
         return False

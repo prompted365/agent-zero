@@ -29,6 +29,7 @@ _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.pattern_cache import scan_text as scan_pattern_anchors
+from _helpers.filter_lock import load_filter
 
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
@@ -125,6 +126,7 @@ class AnchorTensionTracker(Extension):
                 "embedding": embedding,
                 "top_k": TOP_K,
                 "collection": COLLECTION,
+                "filter_metadata": load_filter(),
             }
             body = json.dumps(payload).encode()
             req = urllib.request.Request(
