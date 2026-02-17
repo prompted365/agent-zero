@@ -50,6 +50,9 @@ def validate_shards():
     Validate all 3 shards exist and share the same protected_hash.
     Returns True if the lock is intact (filter stays protected).
     """
+    if not os.path.isdir(SHARD_DIR):
+        _log_access("DEGRADED", f"shard directory missing: {SHARD_DIR}")
+        return False
     for entity in ENTITIES:
         shard_path = os.path.join(SHARD_DIR, f"{entity}.shard.json")
         if not os.path.exists(shard_path):
