@@ -9,6 +9,10 @@ Design principle: Same as Idea Whisper. Context landscaping, not
 instructions. One-line macro injection that disappears into ambient
 awareness. If Mogul says "the economy whisper reports" — it has failed.
 
+v1.1: Governance tags (HALT, RESERVE_BREACH, FROZEN, STALENESS_LAG,
+RATE_BAND_BREACH) appended as macro-only suffixes. Tags, not instructions.
+Fail-silent degradation to v1.0 format if v1.1 keys absent.
+
 Fail-silent: If the foreman is unreachable, no injection occurs.
 """
 
@@ -21,7 +25,8 @@ from agent import LoopData
 # Relevance gate: economy/supply/reserve/rate/mint keywords
 _RELEVANCE_KEYWORDS = re.compile(
     r"(econom|supply|reserve|mint|burn|rate|ucoin|inflation|deflation"
-    r"|liquidity|monetary|circuit.?break|frozen|phase|treasury)",
+    r"|liquidity|monetary|circuit.?break|frozen|phase|treasury"
+    r"|halt|breach|stale)",
     re.IGNORECASE,
 )
 
@@ -30,7 +35,7 @@ FOREMAN_URL = os.environ.get("NAUTILUS_FOREMAN_URL", "http://localhost:8090")
 
 
 class EconomyWhisper(Extension):
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
     __requires_a0__ = ">=0.8"
     __schema__ = "LoopData.extras_persistent[economy_context, _economy_last_gen] (write)"
 
@@ -72,8 +77,15 @@ class EconomyWhisper(Extension):
 
         whisper = (
             f"[ECONOMY: supply={supply:.0f} rate={rate:.4f}({delta_dir}{rate_delta:.4f}) "
-            f"reserves={reserve_ratio:.1%} growth={growth_dir}{growth:.4%} phase={phase}]"
+            f"reserves={reserve_ratio:.1%} growth={growth_dir}{growth:.4%} phase={phase}"
         )
+
+        # v1.1 governance tags (fail-silent degradation)
+        tags = self._compute_tags(economy, econ_data)
+        if tags:
+            whisper += " " + " ".join(tags)
+
+        whisper += "]"
 
         loop_data.extras_persistent["economy_context"] = whisper
         loop_data.extras_persistent["_economy_last_gen"] = snap_gen
@@ -82,6 +94,33 @@ class EconomyWhisper(Extension):
             type="util",
             heading=f"Economy Whisper: gen={snap_gen} phase={phase} R/S={reserve_ratio:.3f}",
         )
+
+    def _compute_tags(self, response, econ_data):
+        """Compute governance tags from v1.1 response fields. Returns list of tag strings."""
+        tags = []
+        try:
+            # mint_halted from economy snapshot
+            if econ_data.get("mint_halted"):
+                tags.append("#HALT")
+
+            # breach_flags from v1.1 response envelope
+            breach = response.get("breach_flags", {})
+            if breach.get("reserve_breach"):
+                tags.append("#RESERVE_BREACH")
+            if breach.get("frozen"):
+                tags.append("#FROZEN")
+            if breach.get("rate_band_breach"):
+                tags.append("#RATE_BAND_BREACH")
+
+            # staleness from v1.1 response envelope
+            staleness = response.get("staleness", {})
+            if staleness.get("stale"):
+                tags.append("#STALENESS_LAG")
+        except Exception:
+            # Fail-silent: degrade to v1.0 (no tags)
+            pass
+
+        return tags
 
     def _is_relevant(self, loop_data: LoopData) -> bool:
         """Check if conversation touches economy topics."""
