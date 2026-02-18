@@ -31,7 +31,7 @@ _RELEVANCE_KEYWORDS = re.compile(
 )
 
 # Configuration via environment
-FOREMAN_URL = os.environ.get("NAUTILUS_FOREMAN_URL", "http://localhost:8090")
+FOREMAN_URL = os.environ.get("NAUTILUS_FOREMAN_URL", "http://nautilus-foreman:8090")
 
 
 class EconomyWhisper(Extension):
