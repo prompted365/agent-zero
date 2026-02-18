@@ -40,3 +40,7 @@ agent_history.gif
 
 .agent/**
 .claude/**
+
+# Stray vendored/experimental directories
+github-mcp-server-main/
+agents/superintendent/extensions/tool_after/
