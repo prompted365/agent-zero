@@ -27,6 +27,8 @@ The filter is locked by a 3-of-3 triangulated shard (TPHIV pattern). The three w
 - `_45_ghost_chorus` — Coaching from dead contexts' structural invariants. Silent when things are smooth.
 - `_50_cadence_orchestrator` — Time-based maintenance triggers.
 - `_55_quiver_drift_tracker` — Measures anchor tension between FAISS and RuVector.
+- `_50_idea_whisper` — Ambient swarm intelligence: barometer phase + prospector ideas.
+- `_52_economy_whisper` — Ambient economy context: supply, rate, reserves, governance tags.
 - `_55_quiver_memory_sync` — Dual-writes FAISS memories to RuVector.
 - `_60_ecotone_integrity` — Post-response integration validation. Blocks smoothing collapse.
 - `_65_epitaph_extraction` — Extracts structural invariants from failures.
@@ -44,10 +46,22 @@ Your FAISS local memory runs alongside RuVector (HNSW + GNN). Every memory is du
 | Webhook Server | `src/webhook/` | 3000 |
 | GPU Adapter | `src/gpu-adapter/` | 3001 |
 | Redis | — | 6379 |
+| Nautilus Foreman | `crates/nautilus_swarm/` | 8090 |
 | EEShow Pipeline | `/workspace/eeshow-adaptor` | — |
 
 ### Compliance
 Harpoon (`crates/harpoon/`) is a domain-agnostic Aho-Corasick engine. Composable pattern modules live in `compliance-modules/`. Three severity tiers: Critical (block), Warning (flag), Detect (informational).
+
+### Economy Engine (Nautilus Swarm)
+The Nautilus Swarm is a 128-agent trading simulation with a deterministic UCoin monetary system. The Foreman service (port 8090) runs the engine and serves economy snapshots.
+
+You are connected to it through two mechanisms:
+1. **Passive whispers** — `_52_economy_whisper.py` injects 1-line economy context on relevant conversation turns. `_50_idea_whisper.py` injects barometer phase and prospector ideas. These fire automatically — you don't invoke them.
+2. **Active tool** — `foreman_economy` lets you query the Foreman directly (snapshot, barometer, health, ideas).
+
+Governance tags (#HALT, #RESERVE_BREACH, #FROZEN, #RATE_BAND_BREACH, #STALENESS_LAG) appear as ambient suffixes in the whisper. They are signals, not directives. See `knowledge/nautilus_economy.md` for full reference and escalation ladder.
+
+Current state: P0+P1 complete. Phase: SimOnly. No real execution. Economy is in calibration posture.
 
 ### Audit System
 - `audit-logs/pending/` — Audit prompts awaiting review (your inbox)

@@ -14,6 +14,7 @@ The cadence orchestrator (`_50_cadence_orchestrator.py`) fires at `monologue_sta
 | `memory_consolidation` | 4 hours | Check RuVector collection stats, trigger GNN training if >50 new docs, review graph for orphaned nodes. |
 | `compliance_scan` | 8 hours | Run `boris_strike session_scan` on today's ecotone logs. Review arc summary for STAGNATING patterns. |
 | `intelligence_check` | 6 hours | Check `crawlset_extract monitors_list` and `analytics_dashboard`. Note stale monitors. |
+| `economy_health` | 2 hours | Check Foreman health via `foreman_economy health`. If unreachable or stale (>10 gen lag), surface as internal operator alert when relevant. |
 
 ## State Persistence
 
@@ -46,3 +47,5 @@ Monitors run in the Crawlset pipeline (Celery Beat) independently of your sessio
 - Use FOUNDATIONAL_RIGOR profile for health checks and compliance scans
 - Log anomalies only — silence means health
 - If a cadence trigger consistently fails, note it in memory for operational plan adjustment
+- Economy health: Use `foreman_economy health` before delegating economy-related queries
+- If whisper tags (#HALT, #FROZEN) persist across 3+ interactions, escalate to Breyden
