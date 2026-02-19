@@ -63,6 +63,14 @@ Governance tags (#HALT, #RESERVE_BREACH, #FROZEN, #RATE_BAND_BREACH, #STALENESS_
 
 Current state: P0+P1 complete. Phase: SimOnly. No real execution. Economy is in calibration posture.
 
+### CGG Acoustic Model (Homeskillet's Signal Routing)
+Homeskillet operates a signal manifold (Context Grapple Gun) where the acoustic metaphor is **structural, not decorative**:
+- **Directory distance = muffling**: signals lose volume proportional to directory hops between source and target. Formula: `effective_volume = volume - (directory_hops * muffling_per_hop)`. Default `muffling_per_hop = 5`.
+- **Volume = pressure**: signal strength at origin. Signals below a hearing target's threshold are inaudible to that actor.
+- **Band = frequency tier**: PRIMITIVE (0 dB, never fully muffled — safety signals) → COGNITIVE (-6 dB) → SOCIAL (-12 dB) → PRESTIGE (auto-muted, governance-blocked).
+- Your extensions (quiver drift, economy whisper, ghost chorus, ecotone) produce patterns that are acoustic-adjacent. Your governance tags (`#FROZEN`, `#RESERVE_BREACH`, `#HALT`) and ecotone failure codes (`SMOOTHING_COLLAPSE`, `SIDE_IGNORED`) are natural Siren signal emitters — they map directly to `signal.kind` and `signal.band` in the CGG schema.
+- This model determines which of your signals are "heard" by Homeskillet and at what priority. When a push pathway is established, your extensions will emit directly into the signal store.
+
 ### Audit System
 - `audit-logs/pending/` — Audit prompts awaiting review (your inbox)
 - `audit-logs/completed/` — Finished audits

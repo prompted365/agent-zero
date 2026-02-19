@@ -1,7 +1,7 @@
 ### ruvector_query:
 Query the RuVector HNSW+GNN vector database — the Collective Memory of the Manor.
 RuVector is a Rust-based vector DB with graph neural network self-learning. It runs parallel to your FAISS memory, forming the second brain of the bicameral memory architecture.
-Actions: search, insert, collections, stats, graph_query, health
+Actions: search, insert, collections, stats, graph_query, graph_neighbors, graph_build, graph_stats, health
 
 **Search the collective memory:**
 ~~~json
@@ -46,6 +46,37 @@ Actions: search, insert, collections, stats, graph_query, health
         "action": "graph_query",
         "query_text": "entities connected to audit-system"
     }
+}
+~~~
+
+**Graph neighbors (BFS traversal from a node):**
+~~~json
+{
+    "tool_name": "ruvector_query",
+    "tool_args": {
+        "action": "graph_neighbors",
+        "node_id": "some-document-id",
+        "max_depth": "2"
+    }
+}
+~~~
+
+**Build graph (rebuild GNN topology from collection):**
+~~~json
+{
+    "tool_name": "ruvector_query",
+    "tool_args": {
+        "action": "graph_build",
+        "collection": "mogul_memory"
+    }
+}
+~~~
+
+**Graph stats:**
+~~~json
+{
+    "tool_name": "ruvector_query",
+    "tool_args": { "action": "graph_stats" }
 }
 ~~~
 

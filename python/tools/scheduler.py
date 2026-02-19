@@ -101,7 +101,7 @@ class SchedulerTool(Tool):
         if not task:
             return Response(message=f"Task not found: {task_uuid}", break_loop=False)
         await TaskScheduler.get().run_task_by_uuid(task_uuid, task_context)
-        if task.context_id == self.agent.context.id:
+        if self.agent.context and task.context_id == self.agent.context.id:
             break_loop = True  # break loop if task is running in the same context, otherwise it would start two conversations in one window
         else:
             break_loop = False
@@ -255,7 +255,7 @@ class SchedulerTool(Tool):
         if not task:
             return Response(message=f"Task not found: {task_uuid}", break_loop=False)
 
-        if task.context_id == self.agent.context.id:
+        if self.agent.context and task.context_id == self.agent.context.id:
             return Response(message="You can only wait for tasks running in their own dedicated context.", break_loop=False)
 
         done = False

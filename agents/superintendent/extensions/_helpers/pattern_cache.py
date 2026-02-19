@@ -13,7 +13,10 @@ Used by:
 import os
 import re
 import json
+import logging
 from typing import NamedTuple
+
+logger = logging.getLogger(__name__)
 
 PRIORS_DIR = os.environ.get(
     "PRIORS_MODULE_DIR",
@@ -35,6 +38,7 @@ def _load_modules() -> list[PatternAnchor]:
     """Walk priors directory and extract all detect-tier patterns."""
     anchors = []
     if not os.path.isdir(PRIORS_DIR):
+        logger.warning(f"Pattern priors directory missing: {PRIORS_DIR}")
         return anchors
     for fname in sorted(os.listdir(PRIORS_DIR)):
         if not fname.endswith(".json"):
@@ -47,7 +51,8 @@ def _load_modules() -> list[PatternAnchor]:
             domain = mod.get("domain", "priors")
             for term in mod.get("patterns", {}).get("detect", []):
                 anchors.append(PatternAnchor(term=term.lower(), module_id=module_id, domain=domain))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Skipping malformed priors module {fname}: {e}")
             continue
     return anchors
 
@@ -60,6 +65,7 @@ def get_matcher() -> tuple[re.Pattern | None, dict[str, PatternAnchor]]:
 
     anchors = _load_modules()
     if not anchors:
+        logger.warning(f"No pattern anchors loaded from {PRIORS_DIR}")
         return None, {}
 
     _pattern_lookup = {a.term: a for a in anchors}

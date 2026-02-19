@@ -922,9 +922,11 @@ class TaskScheduler:
                     pass
                 raise
             except Exception as e:
-                # Error
-                PrintStyle.error(f"Scheduler Task '{current_task.name}' failed: {e}")
-                await current_task.on_error(str(e))
+                # Error — include traceback for diagnosis
+                import traceback
+                tb = traceback.format_exc()
+                PrintStyle.error(f"Scheduler Task '{current_task.name}' failed: {e}\n{tb}")
+                await current_task.on_error(f"{e}\n{tb}")
 
                 # Explicitly verify task was updated in storage after error
                 await self._tasks.reload()

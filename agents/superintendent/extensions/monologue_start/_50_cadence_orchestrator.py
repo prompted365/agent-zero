@@ -16,6 +16,7 @@ Within-session state in extras_persistent.
 
 import os
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from python.helpers.extension import Extension
@@ -28,11 +29,13 @@ CADENCE_STATE_DIR = os.environ.get(
 )
 CADENCE_STATE_FILE = os.path.join(CADENCE_STATE_DIR, "mogul_cadence.json")
 
+logger = logging.getLogger(__name__)
+
 # Trigger definitions: name, interval_minutes, directive template
 TRIGGERS = [
     {
         "name": "health_check",
-        "interval_minutes": 60,
+        "interval_minutes": int(os.environ.get("CADENCE_HEALTH_INTERVAL", "60")),
         "directive": (
             "Run an estate health check. Verify all services are operational:\n"
             "  - RuVector (port 6334)\n"
@@ -45,7 +48,7 @@ TRIGGERS = [
     },
     {
         "name": "memory_consolidation",
-        "interval_minutes": 240,  # 4 hours
+        "interval_minutes": int(os.environ.get("CADENCE_MEMORY_INTERVAL", "240")),
         "directive": (
             "Trigger memory consolidation:\n"
             "  1. Use ruvector_query to check collection stats for mogul_memory\n"
@@ -56,7 +59,7 @@ TRIGGERS = [
     },
     {
         "name": "compliance_scan",
-        "interval_minutes": 480,  # 8 hours
+        "interval_minutes": int(os.environ.get("CADENCE_COMPLIANCE_INTERVAL", "480")),
         "directive": (
             "Run pattern anchor scan on today's operational output:\n"
             "  1. Use boris_strike session_scan on today's ecotone logs\n"
@@ -67,7 +70,7 @@ TRIGGERS = [
     },
     {
         "name": "intelligence_check",
-        "interval_minutes": 360,  # 6 hours
+        "interval_minutes": int(os.environ.get("CADENCE_INTEL_INTERVAL", "360")),
         "directive": (
             "Check web intelligence status:\n"
             "  1. Use crawlset_extract monitors_list to see active monitors\n"
@@ -154,12 +157,19 @@ class CadenceOrchestrator(Extension):
             try:
                 with open(CADENCE_STATE_FILE) as f:
                     return json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                corrupt_name = CADENCE_STATE_FILE + f".corrupt.{int(time.time())}"
+                try:
+                    os.rename(CADENCE_STATE_FILE, corrupt_name)
+                except OSError:
+                    pass
+                logger.warning(f"Cadence state corrupted, reset. Saved to {corrupt_name}: {e}")
         return {}
 
     def _save_state(self, state: dict):
         """Save cadence state to persistent file."""
         os.makedirs(CADENCE_STATE_DIR, exist_ok=True)
-        with open(CADENCE_STATE_FILE, "w") as f:
+        tmp = CADENCE_STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(state, f, indent=2)
+        os.replace(tmp, CADENCE_STATE_FILE)

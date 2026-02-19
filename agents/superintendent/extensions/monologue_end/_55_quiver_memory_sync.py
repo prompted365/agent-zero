@@ -12,6 +12,7 @@ Dual-writes memories from FAISS to RuVector, then enriches with:
 import os
 import sys
 import json
+import logging
 import urllib.request
 import urllib.error
 from python.helpers.extension import Extension
@@ -31,6 +32,8 @@ from _helpers.pattern_cache import scan_text as scan_pattern_anchors
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
 DIMENSION = 384  # all-MiniLM-L6-v2 output dimension
+
+logger = logging.getLogger(__name__)
 
 
 class QuiverMemorySync(Extension):
@@ -148,21 +151,39 @@ class QuiverMemorySync(Extension):
                     log_item.update(
                         heading=f"RuVector sync partial: {synced} synced, error: {str(e)[:100]}"
                     )
-                    break
+                    continue
 
-            # Step 1: Entity extraction via utility model
+            # Step 1: Build/rebuild graph from document embeddings
+            graph_built = False
+            if synced > 0:
+                try:
+                    payload = {"collection": COLLECTION, "similarity_threshold": 0.7}
+                    body = json.dumps(payload).encode()
+                    req = urllib.request.Request(
+                        f"{RUVECTOR_URL}/graph/build",
+                        data=body,
+                        method="POST",
+                    )
+                    req.add_header("Content-Type", "application/json")
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        resp.read()
+                    graph_built = True
+                except Exception as e:
+                    logger.warning(f"Graph build failed: {str(e)[:200]}")
+
+            # Step 2: Entity extraction via utility model
             entities = []
             try:
                 entities = await self._extract_entities(combined_text)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Entity extraction failed: {str(e)[:200]}")
 
             # Step 3: Graph edge creation from entities
             edges_created = 0
             try:
                 edges_created = self._create_graph_edges(entities, db)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Graph edge creation failed: {str(e)[:200]}")
 
             # Step 4: SONA trajectory feed
             try:
@@ -175,6 +196,7 @@ class QuiverMemorySync(Extension):
                     f"Quiver sync: {synced}/{len(memories)} memories, "
                     f"{len(entities)} entities, {len(pattern_matches)} pattern anchors, "
                     f"{edges_created} graph edges"
+                    f"{', graph rebuilt' if graph_built else ''}"
                 ),
             )
 
@@ -202,7 +224,11 @@ class QuiverMemorySync(Extension):
             import re
             result = re.sub(r"^```(?:json)?\s*", "", result)
             result = re.sub(r"\s*```$", "", result)
-        parsed = json.loads(result)
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Entity extraction returned invalid JSON: {str(result)[:200]}")
+            parsed = {"entities": []}
         if isinstance(parsed, dict):
             return parsed.get("entities", [parsed])
         return parsed if isinstance(parsed, list) else []
@@ -241,7 +267,7 @@ class QuiverMemorySync(Extension):
                     resp.read()
             except Exception:
                 continue
-            # Create edges for relationships
+            # Create edges for relationships via /graph/edges endpoint
             for rel in entity.get("relationships", []):
                 target = rel.get("target", "")
                 rel_type = rel.get("type", "RELATED_TO")
@@ -250,12 +276,13 @@ class QuiverMemorySync(Extension):
                 target_id = f"entity:{target.lower().replace(' ', '_')}"
                 try:
                     payload = {
-                        "query": f"CREATE (a)-[:{rel_type}]->(b)",
-                        "params": {"a_id": node_id, "b_id": target_id},
+                        "source": node_id,
+                        "target": target_id,
+                        "edge_type": rel_type,
                     }
                     body = json.dumps(payload).encode()
                     req = urllib.request.Request(
-                        f"{RUVECTOR_URL}/graph/query",
+                        f"{RUVECTOR_URL}/graph/edges",
                         data=body,
                         method="POST",
                     )
@@ -308,5 +335,7 @@ class QuiverMemorySync(Extension):
                 req.add_header("Content-Type", "application/json")
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     resp.read()
+            else:
+                logger.warning(f"RuVector collection check failed ({e.code}): {str(e)[:200]}")
         except urllib.error.URLError:
             pass  # RuVector not available — extensions should be resilient

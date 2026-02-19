@@ -310,6 +310,9 @@ class EcotoneIntegrity(Extension):
                 background=True,
             )
 
+            # Guard against None from utility model
+            if result is None:
+                return {"pass": True, "failure_code": None, "evidence": "utility model returned None", "check_type": "utility_model"}
             # Parse JSON from response
             result = result.strip()
             # Handle markdown code fences

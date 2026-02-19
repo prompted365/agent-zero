@@ -23,11 +23,17 @@ class RuVectorQuery(Tool):
                 return await self._stats(**kwargs)
             elif action == "graph_query":
                 return await self._graph_query(**kwargs)
+            elif action == "graph_neighbors":
+                return await self._graph_neighbors(**kwargs)
+            elif action == "graph_build":
+                return await self._graph_build(collection, **kwargs)
+            elif action == "graph_stats":
+                return await self._graph_stats(**kwargs)
             elif action == "health":
                 return await self._health(**kwargs)
             else:
                 return Response(
-                    message=f"Unknown action: {action}. Use: search, insert, collections, stats, graph_query, health",
+                    message=f"Unknown action: {action}. Use: search, insert, collections, stats, graph_query, graph_neighbors, graph_build, graph_stats, health",
                     break_loop=False,
                 )
         except urllib.error.URLError as e:
@@ -109,6 +115,29 @@ class RuVectorQuery(Tool):
             return Response(message="Provide query_text for graph query.", break_loop=False)
         result = self._post("/graph/query", {"query": query_text})
         return Response(message=f"Graph query result:\n{json.dumps(result, indent=2)}", break_loop=False)
+
+    async def _graph_neighbors(self, node_id="", max_depth=2, edge_type=None, **kwargs):
+        if not node_id:
+            return Response(message="Provide node_id for graph neighbors.", break_loop=False)
+        path = f"/graph/neighbors/{node_id}?max_depth={int(max_depth)}"
+        if edge_type:
+            path += f"&edge_type={edge_type}"
+        result = self._get(path)
+        neighbors = result.get("neighbors", [])
+        if not neighbors:
+            return Response(message=f"No neighbors found for '{node_id}'.", break_loop=False)
+        text = f"Found {len(neighbors)} neighbors of '{node_id}':\n\n"
+        for n in neighbors:
+            text += f"- [{n.get('id','?')}] depth={n.get('depth',0)} edge={n.get('edge_type','?')}: {n.get('text','')[:200]}\n"
+        return Response(message=text, break_loop=False)
+
+    async def _graph_build(self, collection, **kwargs):
+        result = self._post("/graph/build", {"collection": collection})
+        return Response(message=f"Graph built: {json.dumps(result)}", break_loop=False)
+
+    async def _graph_stats(self, **kwargs):
+        result = self._get("/graph/stats")
+        return Response(message=f"Graph stats: {json.dumps(result)}", break_loop=False)
 
     async def _health(self, **kwargs):
         result = self._get("/health")

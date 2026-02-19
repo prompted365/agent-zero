@@ -111,7 +111,7 @@ def create_epitaph(
             "collection": COLLECTION,
         })
         for r in search_result.get("results", []):
-            meta = r.get("metadata", {})
+            meta = r.get("metadata") or {}
             if meta.get("type") == "epitaph" and meta.get("dedupe_hash") == dedupe_hash:
                 # Duplicate found — boost instead of creating
                 existing_id = r.get("id")
@@ -196,7 +196,7 @@ def retrieve_coaching_epitaphs(
 
     candidates = []
     for r in search_result.get("results", []):
-        meta = r.get("metadata", {})
+        meta = r.get("metadata") or {}
         if meta.get("type") != "epitaph":
             continue
         eff_weight = meta.get("effective_weight", 0.0)
@@ -270,7 +270,7 @@ def decay_epitaph(doc_id: str) -> bool:
     except (urllib.error.URLError, Exception):
         return False
 
-    meta = doc.get("metadata", {})
+    meta = doc.get("metadata") or {}
     if meta.get("type") != "epitaph":
         return False
 
@@ -281,11 +281,15 @@ def decay_epitaph(doc_id: str) -> bool:
     meta["uses_count"] = uses
     meta["effective_weight"] = round(new_eff, 6)
 
-    # Upsert back
+    # Upsert back — refuse to zero the embedding
+    embedding = doc.get("embedding")
+    if not embedding or all(v == 0.0 for v in embedding[:10]):
+        logger.warning(f"decay_epitaph: missing/zero embedding for {doc_id}, aborting")
+        return False
     payload = {
         "id": doc_id,
         "text": doc.get("text", ""),
-        "embedding": doc.get("embedding", [0.0] * DIMENSION),
+        "embedding": embedding,
         "collection": COLLECTION,
         "metadata": meta,
     }
@@ -326,7 +330,7 @@ def boost_epitaph(doc_id: str, boost: float = 0.05) -> bool:
     except (urllib.error.URLError, Exception):
         return False
 
-    meta = doc.get("metadata", {})
+    meta = doc.get("metadata") or {}
     if meta.get("type") != "epitaph":
         return False
 
@@ -339,10 +343,15 @@ def boost_epitaph(doc_id: str, boost: float = 0.05) -> bool:
     meta["recurrence_count"] = recurrence
     meta["last_seen"] = datetime.now(timezone.utc).isoformat()
 
+    # Refuse to zero the embedding
+    embedding = doc.get("embedding")
+    if not embedding or all(v == 0.0 for v in embedding[:10]):
+        logger.warning(f"boost_epitaph: missing/zero embedding for {doc_id}, aborting")
+        return False
     payload = {
         "id": doc_id,
         "text": doc.get("text", ""),
-        "embedding": doc.get("embedding", [0.0] * DIMENSION),
+        "embedding": embedding,
         "collection": COLLECTION,
         "metadata": meta,
     }
