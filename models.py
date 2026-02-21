@@ -679,7 +679,10 @@ class LiteLLMEmbeddingWrapper(Embeddings):
         model_config: Optional[ModelConfig] = None,
         **kwargs: Any,
     ):
-        self.model_name = f"{provider}/{model}" if provider != "openai" else model
+        # LiteLLM needs provider prefix to select API format + api_base for endpoint
+        # For OpenRouter (provider=openai + api_base), prefix tells LiteLLM "use OpenAI format"
+        # while api_base redirects the actual request to OpenRouter
+        self.model_name = f"{provider}/{model}"
         self.kwargs = kwargs
         self.a0_model_conf = model_config
 
@@ -729,6 +732,10 @@ class LocalSentenceTransformerWrapper(Embeddings):
             "model_kwargs",
         }
         st_kwargs = {k: v for k, v in (kwargs or {}).items() if k in st_allowed_keys}
+
+        # Qwen models require trust_remote_code for custom architecture
+        if "qwen" in model.lower() and "trust_remote_code" not in st_kwargs:
+            st_kwargs["trust_remote_code"] = True
 
         self.model = SentenceTransformer(model, **st_kwargs)
         self.model_name = model
@@ -780,9 +787,10 @@ def _get_litellm_embedding(
     model_config: Optional[ModelConfig] = None,
     **kwargs: Any,
 ):
-    # Check if this is a local sentence-transformers model
-    if provider_name == "huggingface" and model_name.startswith(
-        "sentence-transformers/"
+    # Check if this is a local embedding model (sentence-transformers or known HF models)
+    _LOCAL_EMBED_PREFIXES = ("sentence-transformers/", "Qwen/Qwen3-Embedding")
+    if provider_name == "huggingface" and any(
+        model_name.startswith(p) for p in _LOCAL_EMBED_PREFIXES
     ):
         # Use local sentence-transformers instead of LiteLLM for local models
         provider_name, model_name, kwargs = _adjust_call_args(

@@ -182,6 +182,20 @@ class Memory:
                 relevance_score_fn=Memory._cosine_normalizer,
             )  # type: ignore
 
+            # Validate index/docstore sync — clean orphaned IDs from consolidation
+            index_doc_ids = set(db.index_to_docstore_id.values())
+            docstore_ids = set(db.docstore._dict.keys())
+            orphaned = index_doc_ids - docstore_ids
+            if orphaned:
+                PrintStyle.standard(f"FAISS desync: cleaning {len(orphaned)} orphaned IDs...")
+                if log_item:
+                    log_item.stream(progress=f"\nCleaning {len(orphaned)} orphaned FAISS index entries")
+                db.index_to_docstore_id = {
+                    idx: doc_id for idx, doc_id in db.index_to_docstore_id.items()
+                    if doc_id in docstore_ids
+                }
+                db.save_local(folder_path=db_dir)
+
             # if there is a mismatch in embeddings used, re-index the whole DB
             emb_ok = False
             emb_set_file = files.get_abs_path(db_dir, "embedding.json")

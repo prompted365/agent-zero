@@ -120,20 +120,34 @@ class RecallMemories(Extension):
         db = await Memory.get(self.agent)
 
         # search for general memories and fragments
-        memories = await db.search_similarity_threshold(
-            query=query,
-            limit=set["memory_recall_memories_max_search"],
-            threshold=set["memory_recall_similarity_threshold"],
-            filter=f"area == '{Memory.Area.MAIN.value}' or area == '{Memory.Area.FRAGMENTS.value}'",  # exclude solutions
-        )
+        try:
+            memories = await db.search_similarity_threshold(
+                query=query,
+                limit=set["memory_recall_memories_max_search"],
+                threshold=set["memory_recall_similarity_threshold"],
+                filter=f"area == '{Memory.Area.MAIN.value}' or area == '{Memory.Area.FRAGMENTS.value}'",  # exclude solutions
+            )
+        except ValueError as e:
+            if "Could not find document for id" in str(e):
+                log_item.update(heading=f"Memory recall degraded: FAISS index desync ({e})")
+                memories = []
+            else:
+                raise
 
         # search for solutions
-        solutions = await db.search_similarity_threshold(
-            query=query,
-            limit=set["memory_recall_solutions_max_search"],
-            threshold=set["memory_recall_similarity_threshold"],
-            filter=f"area == '{Memory.Area.SOLUTIONS.value}'",  # exclude solutions
-        )
+        try:
+            solutions = await db.search_similarity_threshold(
+                query=query,
+                limit=set["memory_recall_solutions_max_search"],
+                threshold=set["memory_recall_similarity_threshold"],
+                filter=f"area == '{Memory.Area.SOLUTIONS.value}'",  # exclude solutions
+            )
+        except ValueError as e:
+            if "Could not find document for id" in str(e):
+                log_item.update(heading=f"Solution recall degraded: FAISS index desync ({e})")
+                solutions = []
+            else:
+                raise
 
         if not memories and not solutions:
             log_item.update(

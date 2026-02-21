@@ -32,6 +32,7 @@ _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.perception_lock import decay_epitaph
+from _helpers.signal_emitter import emit_signal, make_dedup_signal_id
 
 MAX_RETRIES = int(os.environ.get("ECOTONE_MAX_RETRIES", "2"))
 SMOOTHING_DRIFT_FLOOR = float(os.environ.get("ECOTONE_SMOOTHING_FLOOR", "0.70"))
@@ -155,6 +156,9 @@ class EcotoneIntegrity(Extension):
             return
 
         # --- FAILURE PATH ---
+
+        # Emit outbound Siren signal on failure (shared bind-mount signal bus)
+        self._emit_failure_signal(verdict, drift, retries)
 
         # Check retry cap
         if retries >= MAX_RETRIES:
@@ -385,3 +389,58 @@ class EcotoneIntegrity(Extension):
                 )
             except Exception:
                 pass
+
+    def _emit_failure_signal(self, verdict: dict, drift: float, retries: int):
+        """Emit a Siren signal to the shared bind-mount signal bus on gate failure.
+
+        Failure code mapping:
+        - SMOOTHING_COLLAPSE → BEACON/PRIMITIVE (integrity threat)
+        - INSUFFICIENT_GROUNDING → BEACON/COGNITIVE (substrate gap)
+        - SHALLOW_PASS → TENSION/COGNITIVE (unresolved tension passed through)
+        - Other → BEACON/COGNITIVE (default)
+        """
+        try:
+            failure_code = verdict.get("failure_code", "UNKNOWN")
+
+            # Map failure codes to signal band/kind
+            if failure_code == "SMOOTHING_COLLAPSE":
+                band = "PRIMITIVE"
+                kind = "BEACON"
+            elif failure_code == "SHALLOW_PASS":
+                band = "COGNITIVE"
+                kind = "TENSION"
+            else:
+                band = "COGNITIVE"
+                kind = "BEACON"
+
+            # Dedup: same failure code on the same day = same signal ID
+            # (prevents spamming from repeated gate failures in one session)
+            sig_id = make_dedup_signal_id("ecotone", failure_code.lower())
+
+            emit_signal(
+                signal_id=sig_id,
+                kind=kind,
+                band=band,
+                subsystem="ecotone",
+                source="extensions/message_loop_end/_60_ecotone_integrity.py",
+                signature=f"ecotone_gate_{failure_code.lower()}",
+                volume=40 if failure_code == "SMOOTHING_COLLAPSE" else 30,
+                volume_rate=5,
+                max_volume=80,
+                ttl_hours=48,
+                summary=(
+                    f"Ecotone gate failure: {failure_code} "
+                    f"(drift={drift:.2f}, retry={retries}). "
+                    f"{verdict.get('evidence', '')[:200]}"
+                ),
+                suggested_checks=[
+                    f"Check drift patterns around {failure_code}",
+                    "Review recent epitaphs in audit-logs/ecotone/",
+                ],
+                links=[
+                    "vendor/agent-zero/agents/superintendent/extensions/message_loop_end/_60_ecotone_integrity.py",
+                ],
+            )
+        except Exception:
+            # Fail-silent: signal emission must never crash the gate
+            pass

@@ -26,7 +26,7 @@ from python.helpers.log import LogItem
 _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
-from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs, _ruvector_post, COLLECTION, DIMENSION
+from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs, _ruvector_post, COLLECTION
 
 # failure_code → context_shape (deterministic mapping)
 FAILURE_SHAPE_MAP = {
@@ -125,7 +125,7 @@ class EpitaphExtraction(Extension):
             )
 
         # Volume snapshot: lightweight epitaph pool health signal
-        self._emit_volume_snapshot()
+        self._emit_volume_snapshot(db)
 
         log_item.update(
             heading=(
@@ -134,13 +134,19 @@ class EpitaphExtraction(Extension):
             ),
         )
 
-    def _emit_volume_snapshot(self):
+    def _emit_volume_snapshot(self, db=None):
         """Lightweight epitaph pool health signal — runs once per monologue."""
         try:
             from _helpers.chorus_telemetry import log_chorus_event
 
+            # Use embedder for a real probe vector (dimension-agnostic)
+            if db:
+                probe = list(db.db.embedding_function.embed_query("epitaph health"))
+            else:
+                return  # No embedder available, skip snapshot
+
             results = _ruvector_post("/search", {
-                "embedding": [0.0] * DIMENSION,
+                "embedding": probe,
                 "top_k": 200,
                 "collection": COLLECTION,
             })

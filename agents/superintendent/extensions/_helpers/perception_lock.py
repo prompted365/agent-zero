@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
-DIMENSION = 384  # all-MiniLM-L6-v2 output dimension
 
 # Controlled vocabulary for context_shape — closed set, no free-form.
 VALID_CONTEXT_SHAPES = {
@@ -488,7 +487,7 @@ def sync_journal_epitaphs(
         if not trigger_signature:
             trigger_signature = "journal_entry"
 
-        # Generate embedding
+        # Generate embedding — skip entry if no embedding source available
         text = f"{context_shape}: {collapse_mode} under {trigger_signature}"
         embedding = None
         if embed_fn:
@@ -500,10 +499,10 @@ def sync_journal_epitaphs(
                 db = asyncio.get_event_loop().run_until_complete(Memory.get(agent))
                 embedding = list(db.db.embedding_function.embed_query(text))
             except Exception:
-                embedding = [0.0] * DIMENSION
+                pass  # No zero-vector fallback — skip entry below
 
-        if embedding is None:
-            embedding = [0.0] * DIMENSION
+        if embedding is None or (embedding and all(v == 0.0 for v in embedding[:10])):
+            continue  # Refuse to create epitaph with missing/zero embedding
 
         # Create epitaph
         source_event = f"journal_{os.path.basename(journal_epitaph_path)}_{i}"

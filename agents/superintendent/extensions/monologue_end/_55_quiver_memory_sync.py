@@ -31,7 +31,6 @@ from _helpers.pattern_cache import scan_text as scan_pattern_anchors
 
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
-DIMENSION = 384  # all-MiniLM-L6-v2 output dimension
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +93,11 @@ class QuiverMemorySync(Extension):
                 log_item.update(heading="No memories to sync.")
                 return
 
-            # Ensure collection exists in RuVector
-            self._ensure_collection()
+            # Compute embedding dimension from the active model (supports model migration)
+            dimension = len(db.db.embedding_function.embed_query("dimension probe"))
+
+            # Ensure collection exists in RuVector with correct dimension
+            self._ensure_collection(dimension)
 
             # Pre-compute texts and scan for pattern anchors so tags
             # can be baked into each document's metadata at creation time
@@ -312,7 +314,7 @@ class QuiverMemorySync(Extension):
         with urllib.request.urlopen(req, timeout=5) as resp:
             resp.read()
 
-    def _ensure_collection(self):
+    def _ensure_collection(self, dimension: int):
         """Create the mogul_memory collection if it doesn't exist."""
         try:
             req = urllib.request.Request(f"{RUVECTOR_URL}/collections/{COLLECTION}")
@@ -323,7 +325,7 @@ class QuiverMemorySync(Extension):
                 # Collection doesn't exist, create it
                 payload = {
                     "name": COLLECTION,
-                    "dimension": DIMENSION,
+                    "dimension": dimension,
                     "metric": "cosine",
                 }
                 body = json.dumps(payload).encode()
