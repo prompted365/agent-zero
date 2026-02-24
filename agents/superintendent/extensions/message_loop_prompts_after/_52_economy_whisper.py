@@ -15,7 +15,7 @@ Fail-silent degradation to v1.0 format if v1.1 keys absent.
 
 v1.2: Tool budget reader (Epistemic Compression Gate integration).
 Reads ucoin_balance/tool_spent_total_nuc/tool_calls_total from
-extras_persistent (written by code_execution_tool.py). Reports as
+AgentContext.data (written by code_execution_tool.py). Reports as
 ToolBudget line. Emits #TOOLS_EXPENSIVE / #BUDGET_EXCEEDED governance
 tags + Siren signals when budget is low/exhausted.
 
@@ -74,10 +74,10 @@ class EconomyWhisper(Extension):
         # Tool budget state (independent of foreman)
         tool_budget_line = ""
         tool_tags = []
-        ucoin_balance = self.agent.context.extras_persistent.get("ucoin_balance")
+        ucoin_balance = self.agent.context.get_data("ucoin_balance")
         if ucoin_balance is not None:
-            total_spent = self.agent.context.extras_persistent.get("tool_spent_total_nuc", 0)
-            total_calls = self.agent.context.extras_persistent.get("tool_calls_total", 0)
+            total_spent = self.agent.context.get_data("tool_spent_total_nuc") or 0
+            total_calls = self.agent.context.get_data("tool_calls_total") or 0
             tool_budget_line = (
                 f" ToolBudget: {ucoin_balance} nUC remaining | "
                 f"{total_spent} spent | {total_calls} calls"
@@ -181,7 +181,7 @@ class EconomyWhisper(Extension):
             return True
 
         # Tool budget governance: relevant when budget is below warning threshold
-        ucoin_balance = self.agent.context.extras_persistent.get("ucoin_balance")
+        ucoin_balance = self.agent.context.get_data("ucoin_balance")
         if ucoin_balance is not None and ucoin_balance < _TOOL_BUDGET_WARNING:
             return True
 
@@ -227,14 +227,14 @@ class EconomyWhisper(Extension):
                 sig_id = make_dedup_signal_id(subsystem, event_tag)
 
                 if is_tool_tag:
-                    ucoin_bal = self.agent.context.extras_persistent.get("ucoin_balance", 0)
-                    total_spent = self.agent.context.extras_persistent.get("tool_spent_total_nuc", 0)
+                    ucoin_bal = self.agent.context.get_data("ucoin_balance") or 0
+                    total_spent = self.agent.context.get_data("tool_spent_total_nuc") or 0
                     summary_text = (
                         f"Governance tag {tag} active. "
                         f"ucoin_balance={ucoin_bal} nUC, total_spent={total_spent} nUC"
                     )
                     checks = [
-                        "Check agent extras_persistent for ucoin_balance",
+                        "Check agent context.data for ucoin_balance",
                         "Review /tmp/mogul_tool_dumps/ for large outputs",
                     ]
                     sig_links = [

@@ -67,10 +67,10 @@ class CodeExecution(Tool):
         await self.agent.handle_intervention()  # wait for intervention and handle it, if paused
 
         # --- Epistemic Compression Gate: Pre-exec balance check ---
-        balance = self.agent.context.extras_persistent.get("ucoin_balance")
+        balance = self.agent.context.get_data("ucoin_balance")
         if balance is None:
             balance = GENESIS_GRANT
-            self.agent.context.extras_persistent["ucoin_balance"] = balance
+            self.agent.context.set_data("ucoin_balance", balance)
 
         if balance < BASE_FEE:
             return Response(
@@ -121,21 +121,26 @@ class CodeExecution(Tool):
         context_tax = raw_output_chars // 100
         cost = BASE_FEE + context_tax
 
-        balance = self.agent.context.extras_persistent.get("ucoin_balance", GENESIS_GRANT)
+        balance = self.agent.context.get_data("ucoin_balance")
+        if balance is None:
+            balance = GENESIS_GRANT
         balance -= cost
-        self.agent.context.extras_persistent["ucoin_balance"] = balance
+        self.agent.context.set_data("ucoin_balance", balance)
 
-        self.agent.context.extras_persistent["tool_spent_total_nuc"] = (
-            self.agent.context.extras_persistent.get("tool_spent_total_nuc", 0) + cost
+        self.agent.context.set_data(
+            "tool_spent_total_nuc",
+            (self.agent.context.get_data("tool_spent_total_nuc") or 0) + cost,
         )
-        self.agent.context.extras_persistent["tool_calls_total"] = (
-            self.agent.context.extras_persistent.get("tool_calls_total", 0) + 1
+        self.agent.context.set_data(
+            "tool_calls_total",
+            (self.agent.context.get_data("tool_calls_total") or 0) + 1,
         )
-        self.agent.context.extras_persistent["tool_output_chars_total"] = (
-            self.agent.context.extras_persistent.get("tool_output_chars_total", 0) + raw_output_chars
+        self.agent.context.set_data(
+            "tool_output_chars_total",
+            (self.agent.context.get_data("tool_output_chars_total") or 0) + raw_output_chars,
         )
 
-        tool_costs = self.agent.context.extras_persistent.get("tool_costs", [])
+        tool_costs = self.agent.context.get_data("tool_costs") or []
         tool_costs.append({
             "tool_name": self.name,
             "raw_chars": raw_output_chars,
@@ -145,7 +150,7 @@ class CodeExecution(Tool):
         })
         if len(tool_costs) > 20:
             tool_costs = tool_costs[-20:]
-        self.agent.context.extras_persistent["tool_costs"] = tool_costs
+        self.agent.context.set_data("tool_costs", tool_costs)
 
         # Prepend metabolic metadata for compression gate
         response = f"__METABOLIC_DATA__:{raw_output_chars}|{cost}|{balance}\n{response}"
