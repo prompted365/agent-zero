@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 import shlex
 import time
 from python.helpers.tool import Tool, Response
@@ -11,6 +12,10 @@ from python.helpers.docker import DockerContainerManager
 from python.helpers.strings import truncate_text as truncate_text_string
 from python.helpers.messages import truncate_text as truncate_text_agent
 import re
+
+# Epistemic Compression Gate — Nano-UCoin tool execution economics
+GENESIS_GRANT = 2_000_000  # 2M nUC — Phase 0 subsidized physics
+BASE_FEE = 10              # nUC per tool execution
 
 # Timeouts for python, nodejs, and terminal runtimes.
 CODE_EXEC_TIMEOUTS: dict[str, int] = {
@@ -61,6 +66,23 @@ class CodeExecution(Tool):
 
         await self.agent.handle_intervention()  # wait for intervention and handle it, if paused
 
+        # --- Epistemic Compression Gate: Pre-exec balance check ---
+        balance = self.agent.context.extras_persistent.get("ucoin_balance")
+        if balance is None:
+            balance = GENESIS_GRANT
+            self.agent.context.extras_persistent["ucoin_balance"] = balance
+
+        if balance < BASE_FEE:
+            return Response(
+                message=(
+                    f"[ECONOMY_HALT: FUNDS_EXHAUSTED] Tool execution denied. "
+                    f"Required: {BASE_FEE} nUC. Available: {balance} nUC. "
+                    "Ask operator to top up ucoin_balance."
+                ),
+                break_loop=False,
+            )
+        # --- End pre-exec gate ---
+
         runtime = self.args.get("runtime", "").lower().strip()
         session = int(self.args.get("session", 0))
         self.allow_running = bool(self.args.get("allow_running", False))
@@ -93,6 +115,42 @@ class CodeExecution(Tool):
             response = self.agent.read_prompt(
                 "fw.code.info.md", info=self.agent.read_prompt("fw.code.no_output.md")
             )
+
+        # --- Epistemic Compression Gate: Post-exec cost math ---
+        raw_output_chars = len(response)
+        context_tax = raw_output_chars // 100
+        cost = BASE_FEE + context_tax
+
+        balance = self.agent.context.extras_persistent.get("ucoin_balance", GENESIS_GRANT)
+        balance -= cost
+        self.agent.context.extras_persistent["ucoin_balance"] = balance
+
+        self.agent.context.extras_persistent["tool_spent_total_nuc"] = (
+            self.agent.context.extras_persistent.get("tool_spent_total_nuc", 0) + cost
+        )
+        self.agent.context.extras_persistent["tool_calls_total"] = (
+            self.agent.context.extras_persistent.get("tool_calls_total", 0) + 1
+        )
+        self.agent.context.extras_persistent["tool_output_chars_total"] = (
+            self.agent.context.extras_persistent.get("tool_output_chars_total", 0) + raw_output_chars
+        )
+
+        tool_costs = self.agent.context.extras_persistent.get("tool_costs", [])
+        tool_costs.append({
+            "tool_name": self.name,
+            "raw_chars": raw_output_chars,
+            "cost_nano": cost,
+            "balance_after": balance,
+            "timestamp": datetime.now().isoformat(),
+        })
+        if len(tool_costs) > 20:
+            tool_costs = tool_costs[-20:]
+        self.agent.context.extras_persistent["tool_costs"] = tool_costs
+
+        # Prepend metabolic metadata for compression gate
+        response = f"__METABOLIC_DATA__:{raw_output_chars}|{cost}|{balance}\n{response}"
+        # --- End post-exec cost math ---
+
         return Response(message=response, break_loop=False)
 
     def get_log_object(self):
@@ -470,7 +528,7 @@ class CodeExecution(Tool):
         output = re.sub(r"(?<!\\)\\x[0-9A-Fa-f]{2}", "", output)
         # Strip every line of output before truncation
         # output = "\n".join(line.strip() for line in output.splitlines())
-        output = truncate_text_agent(agent=self.agent, output=output, threshold=1000000) # ~1MB, larger outputs should be dumped to file, not read from terminal
+        output = truncate_text_agent(agent=self.agent, output=output, threshold=50000) # ~50KB belt-and-suspenders; compression gate further reduces to 2KB at perception layer
         return output
 
     async def ensure_cwd(self) -> str | None:
