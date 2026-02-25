@@ -142,9 +142,8 @@ class GhostChorus(Extension):
             )
         invariants_block = "\n".join(invariants_lines)
 
-        # Determine drift band from cached drift data
-        drift_data = loop_data.extras_persistent.get("_drift_cache", {})
-        dd = drift_data.get("drift_data", {})
+        # Determine drift band from quiver_drift_data (set by _55_quiver_drift_tracker)
+        dd = loop_data.extras_persistent.get("quiver_drift_data", {})
         topic_novelty = dd.get("topic_novelty", 0.0)
         if topic_novelty >= 0.8:
             drift_band = "high"
@@ -231,9 +230,8 @@ class GhostChorus(Extension):
         if retries > 0:
             return "under_pressure"
 
-        # Novel territory: high topic novelty from cached drift data
-        drift_cache = extras.get("_drift_cache", {})
-        drift_data = drift_cache.get("drift_data", {})
+        # Novel territory: high topic novelty from quiver_drift_data
+        drift_data = extras.get("quiver_drift_data", {})
         topic_novelty = drift_data.get("topic_novelty", 0.0)
         if topic_novelty >= 0.60:
             # Check user message for more specific shapes

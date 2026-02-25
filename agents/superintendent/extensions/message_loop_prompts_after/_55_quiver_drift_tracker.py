@@ -54,13 +54,22 @@ DRIFT_CHECK_INTERVAL = int(os.environ.get("QUIVER_DRIFT_INTERVAL", "1"))
 TOP_K = 5
 CACHE_COSINE_THRESHOLD = 0.15
 
+# Module-level cache — NOT in extras_persistent (avoids 92k char context bloat)
+# Survives across loop iterations within the same monologue (same process).
+_drift_cache: dict | None = None
+
 
 class AnchorTensionTracker(Extension):
-    __version__ = "2.0.0"
+    __version__ = "2.0.1"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[quiver_drift_data, quiver_drift, _drift_cache]"
+    __schema__ = "LoopData.extras_persistent[quiver_drift_data, quiver_drift]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
+        # Clear cache on new monologue (iteration resets to 0 on new user message)
+        global _drift_cache
+        if loop_data.iteration == 0:
+            _drift_cache = None
+
         set = settings.get_settings()
         if not set.get("memory_recall_enabled", True):
             return
@@ -83,6 +92,7 @@ class AnchorTensionTracker(Extension):
             )
 
     async def _measure_tension(self, loop_data: LoopData, log_item: LogItem):
+        global _drift_cache
         # Build search query from current context
         user_msg = loop_data.user_message.output_text() if loop_data.user_message else ""
         history = self.agent.history.output_text()[-2000:]
@@ -101,7 +111,7 @@ class AnchorTensionTracker(Extension):
         # Check monologue-level cache: if query embedding hasn't shifted
         # significantly, reuse prior FAISS/RuVector results (stores don't
         # change mid-monologue -- sync fires at monologue_end)
-        cache = loop_data.extras_persistent.get("_drift_cache")
+        cache = _drift_cache
         if cache is not None and not cache.get("ruvector_failed"):
             cached_emb = np.array(cache["query_embedding"])
             cos_dist = 1.0 - float(
@@ -221,7 +231,7 @@ class AnchorTensionTracker(Extension):
 
         # Cache results + embedding for subsequent iterations in this monologue
         # If RuVector failed, mark cache so next iteration retries instead of serving stale data
-        loop_data.extras_persistent["_drift_cache"] = {
+        _drift_cache = {
             "query_embedding": embedding,
             "drift_data": drift_data,
             "ruvector_failed": ruvector_failed,

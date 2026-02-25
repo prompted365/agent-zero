@@ -42,10 +42,10 @@ class BicameralConfig:
     """Top-level configuration for the bicameral router."""
     enabled: bool = False
     model_a: LaneModelConfig = field(default_factory=lambda: LaneModelConfig(
-        provider="openrouter", name="google/gemini-3-flash-preview",
+        provider="openrouter", name="qwen/qwen3.5-plus-02-15",
     ))
     model_b: LaneModelConfig = field(default_factory=lambda: LaneModelConfig(
-        provider="openrouter", name="google/gemini-3-flash-preview",
+        provider="openrouter", name="qwen/qwen3.5-plus-02-15",
     ))
     router: RouterModelConfig = field(default_factory=lambda: RouterModelConfig(
         provider="ollama", name="gemma3:270m",
@@ -62,13 +62,13 @@ def load_config() -> BicameralConfig:
         enabled=_bool(os.environ.get("BICAM_ENABLED", "false")),
         model_a=LaneModelConfig(
             provider=os.environ.get("BICAM_MODEL_A_PROVIDER", "openrouter"),
-            name=os.environ.get("BICAM_MODEL_A_NAME", "google/gemini-3-flash-preview"),
+            name=os.environ.get("BICAM_MODEL_A_NAME", "qwen/qwen3.5-plus-02-15"),
             api_key=os.environ.get("BICAM_MODEL_A_API_KEY", ""),
             api_base=os.environ.get("BICAM_MODEL_A_API_BASE", ""),
         ),
         model_b=LaneModelConfig(
             provider=os.environ.get("BICAM_MODEL_B_PROVIDER", "openrouter"),
-            name=os.environ.get("BICAM_MODEL_B_NAME", "google/gemini-3-flash-preview"),
+            name=os.environ.get("BICAM_MODEL_B_NAME", "qwen/qwen3.5-plus-02-15"),
             api_key=os.environ.get("BICAM_MODEL_B_API_KEY", ""),
             api_base=os.environ.get("BICAM_MODEL_B_API_BASE", ""),
         ),

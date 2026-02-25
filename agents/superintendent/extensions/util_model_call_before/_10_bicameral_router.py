@@ -106,12 +106,15 @@ def _init_models(agent):
         **b_kwargs,
     )
 
-    # Construct router model (Gemma 3 via Ollama)
-    _router_model = get_chat_model(
-        provider=_config.router.provider,
-        name=_config.router.name,
-        api_base=_config.router.api_base,
-    )
+    # Construct router model (Gemma 3 via Ollama) — optional, not in hot path
+    try:
+        _router_model = get_chat_model(
+            provider=_config.router.provider,
+            name=_config.router.name,
+            api_base=_config.router.api_base,
+        )
+    except Exception:
+        _router_model = None  # Router model unavailable — lanes still work
 
     # Init context surface singleton
     _surface = ContextSurface()
