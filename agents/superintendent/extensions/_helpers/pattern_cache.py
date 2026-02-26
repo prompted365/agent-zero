@@ -22,6 +22,10 @@ PRIORS_DIR = os.environ.get(
     "PRIORS_MODULE_DIR",
     "/workspace/operationTorque/compliance-modules/priors",
 )
+SHAPES_PATH = os.environ.get(
+    "ARCHETYPE_SHAPES_PATH",
+    "/workspace/operationTorque/compliance-modules/archetype_shapes.json",
+)
 
 class PatternAnchor(NamedTuple):
     term: str
@@ -32,6 +36,7 @@ class PatternAnchor(NamedTuple):
 # Module-level cache
 _compiled_pattern: re.Pattern | None = None
 _pattern_lookup: dict[str, PatternAnchor] = {}
+_shape_term_map: dict[str, dict] = {}  # term → {"family": str, "label": str}
 
 
 def _load_modules() -> list[PatternAnchor]:
@@ -57,13 +62,39 @@ def _load_modules() -> list[PatternAnchor]:
     return anchors
 
 
+def _load_shape_map() -> dict[str, dict]:
+    """Load term→archetype mapping from archetype_shapes.json."""
+    if not os.path.isfile(SHAPES_PATH):
+        logger.info(f"Archetype shapes file not found: {SHAPES_PATH}")
+        return {}
+    try:
+        with open(SHAPES_PATH) as f:
+            data = json.load(f)
+        archetypes = data.get("archetypes", {})
+        term_map = data.get("term_map", {})
+        result = {}
+        for term, family in term_map.items():
+            arch = archetypes.get(family, {})
+            result[term.lower()] = {
+                "family": family,
+                "label": arch.get("label", ""),
+            }
+        logger.info(f"Loaded {len(result)} term→archetype shape mappings")
+        return result
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to load archetype shapes: {e}")
+        return {}
+
+
 def get_matcher() -> tuple[re.Pattern | None, dict[str, PatternAnchor]]:
     """Return compiled regex and lookup dict. Cached after first call."""
-    global _compiled_pattern, _pattern_lookup
+    global _compiled_pattern, _pattern_lookup, _shape_term_map
     if _compiled_pattern is not None:
         return _compiled_pattern, _pattern_lookup
 
     anchors = _load_modules()
+    _shape_term_map = _load_shape_map()
+
     if not anchors:
         logger.warning(f"No pattern anchors loaded from {PRIORS_DIR}")
         return None, {}
@@ -91,10 +122,15 @@ def scan_text(text: str) -> list[dict]:
         seen.add(term)
         anchor = lookup.get(term)
         if anchor:
-            results.append({
+            entry = {
                 "term": anchor.term,
                 "module_id": anchor.module_id,
                 "domain": anchor.domain,
                 "position": match.start(),
-            })
+            }
+            shape = _shape_term_map.get(term)
+            if shape:
+                entry["archetype_family"] = shape["family"]
+                entry["archetype_label"] = shape["label"]
+            results.append(entry)
     return results

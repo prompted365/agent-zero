@@ -78,6 +78,49 @@ def _validate_context_shape(shape: str) -> str:
     return "unclassified"
 
 
+def get_epitaph_pool_depth(
+    embedding: list[float] | None = None,
+    min_weight: float = 0.1,
+) -> int:
+    """
+    Count active epitaphs in the pool.
+
+    If an embedding is provided (preferred), queries RuVector with a broad
+    search and counts type=epitaph results. Without embedding, attempts a
+    dimension-matched zero-vector probe from collection metadata.
+
+    Used by the chorus to determine abstraction level:
+    1-3 = specific, 4-8 = composite, 9+ = ambient.
+
+    Returns 0 on any failure — caller degrades gracefully.
+    """
+    try:
+        if embedding is None:
+            # Attempt to build a probe vector of correct dimension
+            try:
+                col_info = _ruvector_get(f"/collections/{COLLECTION}")
+                dim = col_info.get("dimension", 4096)
+            except Exception:
+                dim = 4096
+            embedding = [0.001] * dim  # Near-zero but non-zero to avoid NaN
+
+        search_result = _ruvector_post("/search", {
+            "embedding": embedding,
+            "top_k": 100,  # Overfetch to count pool
+            "collection": COLLECTION,
+        }, timeout=5)
+        count = 0
+        for r in search_result.get("results", []):
+            meta = r.get("metadata") or {}
+            if meta.get("type") == "epitaph":
+                eff_weight = meta.get("effective_weight", 0.0)
+                if eff_weight >= min_weight:
+                    count += 1
+        return count
+    except Exception:
+        return 0
+
+
 def create_epitaph(
     embedding: list[float],
     context_shape: str,
@@ -98,6 +141,31 @@ def create_epitaph(
     NO free text in the hash (free text creates near-duplicates forever).
     """
     context_shape = _validate_context_shape(context_shape)
+
+    # Dimension guard: refuse to persist epitaph with wrong embedding dimension
+    try:
+        col_info = _ruvector_get(f"/collections/{COLLECTION}")
+        col_dim = col_info.get("dimension", 0)
+        if col_dim > 0 and len(embedding) != col_dim:
+            print(
+                f"[perception_lock] DIMENSION MISMATCH: epitaph embedding={len(embedding)}d, "
+                f"collection expects={col_dim}d. Epitaph NOT persisted. "
+                f"Align FAISS embedder dimension to match RuVector collection."
+            )
+            try:
+                from _helpers.chorus_telemetry import log_chorus_event
+                log_chorus_event("epitaph_dimension_mismatch", {
+                    "embedding_dim": len(embedding),
+                    "collection_dim": col_dim,
+                    "failure_code": failure_code,
+                    "context_shape": context_shape,
+                })
+            except Exception:
+                pass
+            return None
+    except Exception:
+        pass  # Fail-open if can't check — let upsert attempt naturally
+
     dedupe_hash = hashlib.sha256(
         f"{failure_code}|{context_shape}|{collapse_mode}".encode()
     ).hexdigest()[:16]
@@ -283,7 +351,7 @@ def decay_epitaph(doc_id: str) -> bool:
     # Upsert back — refuse to zero the embedding
     embedding = doc.get("embedding")
     if not embedding or all(v == 0.0 for v in embedding[:10]):
-        logger.warning(f"decay_epitaph: missing/zero embedding for {doc_id}, aborting")
+        print(f"[perception_lock] decay_epitaph: missing/zero embedding for {doc_id}, aborting")
         return False
     payload = {
         "id": doc_id,
@@ -345,7 +413,7 @@ def boost_epitaph(doc_id: str, boost: float = 0.05) -> bool:
     # Refuse to zero the embedding
     embedding = doc.get("embedding")
     if not embedding or all(v == 0.0 for v in embedding[:10]):
-        logger.warning(f"boost_epitaph: missing/zero embedding for {doc_id}, aborting")
+        print(f"[perception_lock] boost_epitaph: missing/zero embedding for {doc_id}, aborting")
         return False
     payload = {
         "id": doc_id,

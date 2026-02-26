@@ -29,10 +29,61 @@ if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.pattern_cache import scan_text as scan_pattern_anchors
 
+import time
+
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
+GRAPH_REBUILD_THRESHOLD = 3  # Only rebuild graph when >= N memories synced
 
 logger = logging.getLogger(__name__)
+
+# Module-level dimension cache — avoids re-probing every invocation
+_dim_cache: dict | None = None  # {"faiss_dim": N, "ruvector_dim": M, "compatible": bool}
+_dim_cache_time: float = 0.0
+_DIM_CACHE_TTL = 300.0  # Re-check every 5 minutes
+
+
+def _check_dimension_compat(faiss_dim: int) -> tuple[bool, int]:
+    """
+    Check if FAISS embedding dimension matches RuVector collection dimension.
+    Returns (compatible, ruvector_dim). Caches result for 5 minutes.
+    """
+    global _dim_cache, _dim_cache_time
+    now = time.time()
+
+    if _dim_cache is not None and (now - _dim_cache_time) < _DIM_CACHE_TTL:
+        if _dim_cache["faiss_dim"] == faiss_dim:
+            return _dim_cache["compatible"], _dim_cache["ruvector_dim"]
+
+    try:
+        req = urllib.request.Request(f"{RUVECTOR_URL}/collections/{COLLECTION}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            col_info = json.loads(resp.read().decode())
+        ruvector_dim = col_info.get("dimension", 0)
+
+        # Compatible if dimensions match or collection has no dimension set yet
+        compatible = (faiss_dim == ruvector_dim) or ruvector_dim == 0
+        _dim_cache = {
+            "faiss_dim": faiss_dim,
+            "ruvector_dim": ruvector_dim,
+            "compatible": compatible,
+        }
+        _dim_cache_time = now
+
+        if not compatible:
+            logger.warning(
+                f"DIMENSION MISMATCH: FAISS={faiss_dim}d, RuVector={ruvector_dim}d. "
+                f"Quiver sync blocked until embedding models are aligned. "
+                f"Switch FAISS embedder to match RuVector or re-embed RuVector collection."
+            )
+        return compatible, ruvector_dim
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            # Collection doesn't exist yet — will be created with FAISS dim
+            return True, 0
+        return True, 0  # Fail-open
+    except Exception:
+        return True, 0  # Fail-open if RuVector unreachable
 
 
 class QuiverMemorySync(Extension):
@@ -96,6 +147,17 @@ class QuiverMemorySync(Extension):
             # Compute embedding dimension from the active model (supports model migration)
             dimension = len(db.db.embedding_function.embed_query("dimension probe"))
 
+            # Dimension guard: verify FAISS embeddings are compatible with RuVector collection
+            compatible, ruvector_dim = _check_dimension_compat(dimension)
+            if not compatible:
+                log_item.update(
+                    heading=(
+                        f"Quiver sync BLOCKED: FAISS={dimension}d vs RuVector={ruvector_dim}d. "
+                        f"Align embedding models to restore sync."
+                    ),
+                )
+                return
+
             # Ensure collection exists in RuVector with correct dimension
             self._ensure_collection(dimension)
 
@@ -156,8 +218,9 @@ class QuiverMemorySync(Extension):
                     continue
 
             # Step 1: Build/rebuild graph from document embeddings
+            # Only rebuild for substantive syncs — graph build is expensive (30s timeout)
             graph_built = False
-            if synced > 0:
+            if synced >= GRAPH_REBUILD_THRESHOLD:
                 try:
                     payload = {"collection": COLLECTION, "similarity_threshold": 0.7}
                     body = json.dumps(payload).encode()

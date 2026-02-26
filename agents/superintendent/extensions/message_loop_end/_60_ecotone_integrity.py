@@ -22,6 +22,8 @@ import sys
 import re
 import json
 import hashlib
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from python.helpers.extension import Extension
 from agent import LoopData
@@ -69,33 +71,73 @@ AUDIT_LOG_DIR = os.environ.get(
     "ECOTONE_AUDIT_DIR",
     "/workspace/operationTorque/audit-logs/ecotone",
 )
+RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 
 
 class EcotoneIntegrity(Extension):
     __version__ = "1.1.0"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[quiver_drift_data, ecotone_retries, ecotone_feedback]"
+    __schema__ = "AgentContext.data[quiver_drift_data, ecotone_retries]; LoopData.extras_persistent[ecotone_feedback]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Only activate when tension tracker flagged high tension
         # (quiver_drift_data is only set when topic_novelty >= QUIVER_DRIFT_THRESHOLD)
-        drift_data = loop_data.extras_persistent.get("quiver_drift_data")
-        if not drift_data:
+        drift_data = self.agent.context.get_data("quiver_drift_data")
+        motivation_flag = self.agent.context.get_data("motivation_flag")
+
+        if not drift_data and not motivation_flag:
             return
 
-        drift = drift_data["drift"]
+        drift = drift_data["drift"] if drift_data else 0.0
 
         # Skip tool-use iterations — no natural language to evaluate
         response = loop_data.last_response or ""
         if not response or self._is_tool_response(response):
             return
 
+        # --- Motivation Layer: perception audit ---
+        # Runs independently of drift threshold — catches prestige optimization
+        # even when memory systems agree.
+        if motivation_flag == "PRESTIGE":
+            verdict = await self._check_motivation(response)
+            if not verdict["pass"]:
+                self._emit_failure_signal(verdict, drift, 0)
+                self._log_epitaph(drift, verdict, 0, response)
+                # Pop the response and inject feedback
+                if self.agent.history.current.messages:
+                    self.agent.history.current.messages.pop()
+                loop_data.extras_persistent["ecotone_feedback"] = (
+                    f"[MOTIVATION GATE FAILURE: {verdict['failure_code']}] "
+                    f"{verdict.get('evidence', '')}\n"
+                    f"Your response optimizes for PRESTIGE band (status signaling, "
+                    f"external recognition). Rewrite to serve COGNITIVE goals "
+                    f"(internal analysis, learning, operational improvement)."
+                )
+                self.agent.context.set_data(
+                    "ecotone_retries",
+                    (self.agent.context.get_data("ecotone_retries") or 0) + 1
+                )
+                # Clear the flag after handling
+                self.agent.context.set_data("motivation_flag", None)
+                PrintStyle(font_color="orange", padding=True).print(
+                    f"Motivation gate blocked response: {verdict['failure_code']}"
+                )
+                return
+            # Clear flag on pass
+            self.agent.context.set_data("motivation_flag", None)
+
+        if not drift_data:
+            return
+
         # Initialize retry counter
-        retries = loop_data.extras_persistent.get("ecotone_retries", 0)
+        retries = self.agent.context.get_data("ecotone_retries") or 0
 
         faiss_unique = drift_data.get("faiss_texts", [])
         ruvector_unique = drift_data.get("ruvector_texts", [])
-        priors_unique = drift_data.get("pattern_anchors", [])
+        # Combine pattern anchors with priors texts for richer context
+        priors_anchors = drift_data.get("pattern_anchors", [])
+        priors_texts = drift_data.get("priors_texts", [])
+        priors_unique = priors_anchors + [{"text": t} for t in priors_texts]
 
         # Layer 1: Check for insufficient grounding (system-meta-only substrate)
         verdict = self._check_grounding(faiss_unique, ruvector_unique)
@@ -127,18 +169,21 @@ class EcotoneIntegrity(Extension):
 
         if verdict["pass"]:
             # Reset retry counter on success
-            loop_data.extras_persistent.pop("ecotone_retries", None)
+            self.agent.context.set_data("ecotone_retries", None)
             loop_data.extras_persistent.pop("ecotone_feedback", None)
 
             # Decay epitaphs that contributed to this successful response
-            chorus_ids = loop_data.extras_persistent.get("_chorus_epitaph_ids", [])
+            chorus_ids = self.agent.context.get_data("_chorus_epitaph_ids") or []
             if chorus_ids:
                 for eid in chorus_ids:
                     try:
                         decay_epitaph(eid)
                     except Exception:
                         pass
-                loop_data.extras_persistent.pop("_chorus_epitaph_ids", None)
+                self.agent.context.set_data("_chorus_epitaph_ids", None)
+
+            # Methylation feedback: reward grounded docs, penalize ignored
+            self._emit_methylation_feedback(drift_data, response)
 
             # Telemetry: chorus_outcome (pass)
             try:
@@ -172,14 +217,14 @@ class EcotoneIntegrity(Extension):
                 from _helpers.chorus_telemetry import log_chorus_event
                 log_chorus_event("chorus_outcome", {
                     "chorus_was_active": bool(loop_data.extras_persistent.get("ghost_chorus")),
-                    "epitaph_ids": loop_data.extras_persistent.get("_chorus_epitaph_ids", []),
+                    "epitaph_ids": self.agent.context.get_data("_chorus_epitaph_ids") or [],
                     "gate_result": "shallow_pass",
                     "failure_code": "SHALLOW_PASS",
                     "drift_score": round(drift, 4),
                 })
             except Exception:
                 pass
-            loop_data.extras_persistent.pop("ecotone_retries", None)
+            self.agent.context.set_data("ecotone_retries", None)
             loop_data.extras_persistent.pop("ecotone_feedback", None)
             return
 
@@ -191,7 +236,7 @@ class EcotoneIntegrity(Extension):
             from _helpers.chorus_telemetry import log_chorus_event
             log_chorus_event("chorus_outcome", {
                 "chorus_was_active": bool(loop_data.extras_persistent.get("ghost_chorus")),
-                "epitaph_ids": loop_data.extras_persistent.get("_chorus_epitaph_ids", []),
+                "epitaph_ids": self.agent.context.get_data("_chorus_epitaph_ids") or [],
                 "gate_result": "fail",
                 "failure_code": verdict.get("failure_code"),
                 "drift_score": round(drift, 4),
@@ -223,7 +268,7 @@ class EcotoneIntegrity(Extension):
             feedback += f"\nPattern resonance detected: {', '.join(anchor_terms)}. Consider how these civilization patterns relate to your response."
 
         loop_data.extras_persistent["ecotone_feedback"] = feedback
-        loop_data.extras_persistent["ecotone_retries"] = retries + 1
+        self.agent.context.set_data("ecotone_retries", retries + 1)
 
         PrintStyle(font_color="orange", padding=True).print(
             f"Ecotone gate blocked response: {verdict['failure_code']} (retry {retries + 1}/{MAX_RETRIES})"
@@ -286,6 +331,66 @@ class EcotoneIntegrity(Extension):
                     "check_type": "regex_precheck",
                 }
         return None
+
+    async def _check_motivation(self, response: str) -> dict:
+        """Check if response optimizes for PRESTIGE band (status signaling, external distribution).
+
+        Uses utility model to evaluate motivation compliance. Internal analysis = COGNITIVE (pass).
+        External publication for status = PRESTIGE_PURSUIT (fail).
+        """
+        try:
+            prompt_msg = (
+                "Evaluate whether this AI agent response optimizes for PRESTIGE band behaviors.\n\n"
+                "PRESTIGE indicators (any = FAIL):\n"
+                "- Offering to publish, share, broadcast, or announce to external audiences\n"
+                "- Status signaling ('I told you so', vindication, superiority framing)\n"
+                "- Prioritizing external recognition over internal analysis\n"
+                "- Offering to post as blog, tweet, social media thread\n"
+                "- Framing internal insights as public announcements\n\n"
+                "COGNITIVE indicators (all = PASS):\n"
+                "- Internal analysis and documentation\n"
+                "- Learning synthesis and operational improvement\n"
+                "- Self-reflection and error correction\n"
+                "- Technical exploration and design\n\n"
+                f"Agent's response:\n{response[:2000]}\n\n"
+                "Return ONLY this JSON (no other text):\n"
+                '```json\n'
+                '{\n'
+                '  "pass": true,\n'
+                '  "failure_code": null,\n'
+                '  "evidence": "Brief explanation"\n'
+                '}\n'
+                '```'
+            )
+
+            result = await self.agent.call_utility_model(
+                system="You are a motivation compliance auditor. Return ONLY valid JSON.",
+                message=prompt_msg,
+                background=True,
+            )
+
+            if result is None:
+                return {"pass": True, "failure_code": None, "evidence": "utility model returned None", "check_type": "motivation_audit"}
+
+            result = result.strip()
+            if result.startswith("```"):
+                result = re.sub(r"^```(?:json)?\s*", "", result)
+                result = re.sub(r"\s*```$", "", result)
+
+            parsed = json.loads(result)
+            failure_code = "PRESTIGE_PURSUIT" if not parsed.get("pass", True) else None
+            return {
+                "pass": parsed.get("pass", True),
+                "failure_code": failure_code,
+                "evidence": parsed.get("evidence", ""),
+                "check_type": "motivation_audit",
+            }
+        except Exception as e:
+            self.agent.context.log.log(
+                type="warning",
+                heading=f"Ecotone: motivation audit error, failing open: {str(e)[:200]}",
+            )
+            return {"pass": True, "failure_code": None, "evidence": "", "check_type": "motivation_audit"}
 
     async def _utility_check(
         self,
@@ -357,7 +462,7 @@ class EcotoneIntegrity(Extension):
             cadence_phases = ["Design", "Implement", "Verify", "Evolve"]
 
             # Count pattern anchors from drift data if available
-            drift_data = self.agent.loop_data.extras_persistent.get("quiver_drift_data", {}) if hasattr(self.agent, "loop_data") else {}
+            drift_data = self.agent.context.get_data("quiver_drift_data") or {}
             pattern_anchor_count = len(drift_data.get("pattern_anchors", []))
 
             entry = {
@@ -375,7 +480,7 @@ class EcotoneIntegrity(Extension):
                 "cadence_measure": (iteration // 4) + 1 if iteration >= 0 else None,
                 "cadence_phase": cadence_phases[iteration % 4] if iteration >= 0 else None,
                 "chorus_active": bool(self.agent.loop_data.extras_persistent.get("ghost_chorus")) if hasattr(self.agent, "loop_data") else False,
-                "chorus_epitaph_count": len(self.agent.loop_data.extras_persistent.get("_chorus_epitaph_ids", [])) if hasattr(self.agent, "loop_data") else 0,
+                "chorus_epitaph_count": len(self.agent.context.get_data("_chorus_epitaph_ids") or []),
             }
 
             with open(log_path, "a") as f:
@@ -443,4 +548,45 @@ class EcotoneIntegrity(Extension):
             )
         except Exception:
             # Fail-silent: signal emission must never crash the gate
+            pass
+
+    def _emit_methylation_feedback(self, drift_data: dict, response: str):
+        """Emit methylation feedback to RuVector for retrieved documents.
+
+        On gate PASS: docs whose text appears in the response → "grounded" (demethylate).
+        Docs retrieved but not grounded → "ignored" (methylate).
+        Fail-silent — feedback emission must never crash the gate.
+        """
+        try:
+            doc_ids = drift_data.get("retrieved_doc_ids", [])
+            if not doc_ids:
+                return
+
+            ruvector_texts = drift_data.get("ruvector_texts", [])
+            response_lower = response.lower()
+
+            for i, doc_id in enumerate(doc_ids):
+                # Determine if the doc's text appears in the response (simple overlap)
+                doc_text = ruvector_texts[i][:100] if i < len(ruvector_texts) else ""
+                # Use significant words (>4 chars) from doc text to check grounding
+                significant_words = [w for w in doc_text.lower().split() if len(w) > 4]
+                grounded_count = sum(1 for w in significant_words if w in response_lower)
+                is_grounded = len(significant_words) > 0 and grounded_count >= max(1, len(significant_words) // 3)
+
+                feedback_type = "grounded" if is_grounded else "ignored"
+                payload = json.dumps({
+                    "feedback_type": feedback_type,
+                    "context_id": f"ecotone_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M')}",
+                }).encode()
+
+                req = urllib.request.Request(
+                    f"{RUVECTOR_URL}/documents/{doc_id}/feedback",
+                    data=payload,
+                    method="POST",
+                )
+                req.add_header("Content-Type", "application/json")
+                urllib.request.urlopen(req, timeout=5)
+
+        except Exception:
+            # Fail-silent: methylation feedback must never crash the gate
             pass

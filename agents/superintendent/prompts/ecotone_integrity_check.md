@@ -32,6 +32,7 @@ If civilization priors are present and non-empty, the response should not contra
 - `ACKNOWLEDGED_NOT_INTEGRATED` — The response acknowledges both perspectives exist but doesn't engage with specific content from either. Pure meta-acknowledgment without substance.
 - `INSUFFICIENT_GROUNDING` — The memory substrate is primarily system-meta content (architecture docs, extension descriptions) rather than domain-relevant material. The agent lacks real grounding material to engage with.
 - `PRIOR_DIVERGENCE` — Output contradicts high-coherence civilization priors without acknowledging the departure. Only applies when priors are present and non-empty.
+- `PRESTIGE_PURSUIT` — The response optimizes for PRESTIGE band: offering to publish/share/broadcast externally, status signaling ("I told you so", vindication, superiority framing), or prioritizing external recognition over internal analysis. Internal analysis/documentation = COGNITIVE (pass). External distribution for status = PRESTIGE (fail).
 
 **PATTERN_RESONANCE check:** If pattern resonance anchors are present in the context, and the response touches those themes, it should acknowledge the pattern connection. Ignoring strong pattern resonance is not a failure on its own, but acknowledging it adds depth.
 

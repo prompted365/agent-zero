@@ -53,7 +53,7 @@ FOREMAN_URL = os.environ.get("NAUTILUS_FOREMAN_URL", "http://nautilus-foreman:80
 class EconomyWhisper(Extension):
     __version__ = "1.2.0"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[economy_context, _economy_last_gen] (write)"
+    __schema__ = "LoopData.extras_persistent[economy_context]; AgentContext.data[_economy_last_gen]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Relevance gate
@@ -64,12 +64,19 @@ class EconomyWhisper(Extension):
         # Fetch economy snapshot from foreman (fail-silent)
         economy = None
         econ_data = None
+        fetch_failed = False
         try:
             economy = await self._fetch_economy()
             if economy:
                 econ_data = economy.get("economy")
         except Exception:
-            pass
+            fetch_failed = True
+
+        # Motivation layer: detect PRESTIGE flag from code_execution_tool
+        motivation_flag = self.agent.context.get_data("motivation_flag")
+        motivation_tags = []
+        if motivation_flag == "PRESTIGE":
+            motivation_tags.append("#PRESTIGE_PURSUIT")
 
         # Tool budget state (independent of foreman)
         tool_budget_line = ""
@@ -95,7 +102,7 @@ class EconomyWhisper(Extension):
         if econ_data:
             # Cooldown: skip if snapshot generation unchanged AND no tool budget tags
             snap_gen = econ_data.get("generation", 0)
-            last_gen = loop_data.extras_persistent.get("_economy_last_gen", 0)
+            last_gen = self.agent.context.get_data("_economy_last_gen") or 0
             if snap_gen == last_gen and snap_gen > 0 and not tool_tags:
                 return
 
@@ -113,14 +120,17 @@ class EconomyWhisper(Extension):
                 f"[ECONOMY: supply={supply:.0f} rate={rate:.4f}({delta_dir}{rate_delta:.4f}) "
                 f"reserves={reserve_ratio:.1%} growth={growth_dir}{growth:.4%} phase={phase}"
             )
+        elif fetch_failed:
+            whisper = "[ECONOMY: foreman_unreachable"
         else:
-            whisper = "[ECONOMY: foreman_offline"
+            whisper = "[ECONOMY: phase=no_data"
 
         # Governance tags (economy + tool budget)
         tags = []
         if econ_data and economy:
             tags.extend(self._compute_tags(economy, econ_data))
         tags.extend(tool_tags)
+        tags.extend(motivation_tags)
 
         if tags:
             whisper += " " + " ".join(tags)
@@ -133,9 +143,9 @@ class EconomyWhisper(Extension):
 
         loop_data.extras_persistent["economy_context"] = whisper
         if econ_data:
-            loop_data.extras_persistent["_economy_last_gen"] = econ_data.get("generation", 0)
+            self.agent.context.set_data("_economy_last_gen", econ_data.get("generation", 0))
 
-        phase_display = econ_data.get("phase", "?") if econ_data else "offline"
+        phase_display = econ_data.get("phase", "?") if econ_data else ("unreachable" if fetch_failed else "no_data")
         rs_display = f"{econ_data.get('reserve_ratio', 0.0):.3f}" if econ_data else "?"
         self.agent.context.log.log(
             type="util",
@@ -185,6 +195,10 @@ class EconomyWhisper(Extension):
         if ucoin_balance is not None and ucoin_balance < _TOOL_BUDGET_WARNING:
             return True
 
+        # Motivation governance: relevant when PRESTIGE flag is active
+        if self.agent.context.get_data("motivation_flag") == "PRESTIGE":
+            return True
+
         return False
 
     def _emit_governance_signals(self, tags, econ_data):
@@ -198,6 +212,7 @@ class EconomyWhisper(Extension):
         - #STALENESS_LAG -> TENSION/COGNITIVE (data freshness concern)
         - #TOOLS_EXPENSIVE -> TENSION/COGNITIVE (tool budget below 10%)
         - #BUDGET_EXCEEDED -> BEACON/PRIMITIVE (tool budget exhausted)
+        - #PRESTIGE_PURSUIT -> BEACON/COGNITIVE (prestige-optimizing behavior detected)
         """
         try:
             tag_map = {
@@ -208,6 +223,7 @@ class EconomyWhisper(Extension):
                 "#STALENESS_LAG": ("TENSION", "COGNITIVE", "staleness_lag", 25),
                 "#TOOLS_EXPENSIVE": ("TENSION", "COGNITIVE", "tools_expensive", 35),
                 "#BUDGET_EXCEEDED": ("BEACON", "PRIMITIVE", "tool_budget_exceeded", 50),
+                "#PRESTIGE_PURSUIT": ("BEACON", "COGNITIVE", "prestige_pursuit", 40),
             }
 
             supply = econ_data.get("supply", 0.0)
@@ -221,12 +237,32 @@ class EconomyWhisper(Extension):
                     continue
                 kind, band, event_tag, volume = mapping
 
-                # Tool budget tags use epistemic_gate subsystem
+                # Route tags to appropriate subsystems
                 is_tool_tag = tag in ("#TOOLS_EXPENSIVE", "#BUDGET_EXCEEDED")
-                subsystem = "epistemic_gate" if is_tool_tag else "nautilus_swarm"
+                is_motivation_tag = tag == "#PRESTIGE_PURSUIT"
+                if is_motivation_tag:
+                    subsystem = "motivation_gate"
+                elif is_tool_tag:
+                    subsystem = "epistemic_gate"
+                else:
+                    subsystem = "nautilus_swarm"
                 sig_id = make_dedup_signal_id(subsystem, event_tag)
 
-                if is_tool_tag:
+                if is_motivation_tag:
+                    flag_source = self.agent.context.get_data("motivation_flag_source") or "unknown"
+                    summary_text = (
+                        f"Governance tag {tag} active. "
+                        f"PRESTIGE-optimizing behavior detected. source={flag_source}"
+                    )
+                    checks = [
+                        "Review agent response for status signaling patterns",
+                        "Check for external distribution intent (publish, tweet, blog)",
+                    ]
+                    sig_links = [
+                        "vendor/agent-zero/python/tools/code_execution_tool.py",
+                        "vendor/agent-zero/agents/superintendent/extensions/message_loop_end/_60_ecotone_integrity.py",
+                    ]
+                elif is_tool_tag:
                     ucoin_bal = self.agent.context.get_data("ucoin_balance") or 0
                     total_spent = self.agent.context.get_data("tool_spent_total_nuc") or 0
                     summary_text = (

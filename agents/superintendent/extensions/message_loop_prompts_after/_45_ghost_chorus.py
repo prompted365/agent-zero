@@ -14,6 +14,11 @@ The test: If Mogul's response after chorus injection contains language like
 "as past contexts suggest" or references the coaching explicitly — the
 chorus has failed. The chorus is correct when Mogul simply reasons more
 stably without attribution.
+
+Abstraction scaling (v1.1.0): As the epitaph pool grows, the chorus
+evolves from specific failure mode grounding → composite territorial
+observation → pure ambient gradient shaping. The abstraction level is
+determined by total pool depth, not just retrieved count.
 """
 
 import os
@@ -28,7 +33,7 @@ from agent import LoopData
 _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
-from _helpers.perception_lock import retrieve_coaching_epitaphs
+from _helpers.perception_lock import retrieve_coaching_epitaphs, get_epitaph_pool_depth
 
 # Context shape detection keywords
 _CONVERGING_KEYWORDS = re.compile(
@@ -55,9 +60,9 @@ INTENSITY_MAP = {
 
 
 class GhostChorus(Extension):
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[ghost_chorus, _chorus_epitaph_ids] (write)"
+    __schema__ = "LoopData.extras_persistent[ghost_chorus]; AgentContext.data[_chorus_epitaph_ids]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         set = settings.get_settings()
@@ -71,7 +76,7 @@ class GhostChorus(Extension):
         if chorus_mode == "steady_state":
             # Chorus is silent when smooth
             loop_data.extras_persistent.pop("ghost_chorus", None)
-            loop_data.extras_persistent.pop("_chorus_epitaph_ids", None)
+            self.agent.context.set_data("_chorus_epitaph_ids", None)
             # Telemetry: sample 10% of silence events to avoid flooding
             import random
             if random.random() < 0.1:
@@ -142,8 +147,8 @@ class GhostChorus(Extension):
             )
         invariants_block = "\n".join(invariants_lines)
 
-        # Determine drift band from quiver_drift_data (set by _55_quiver_drift_tracker)
-        dd = loop_data.extras_persistent.get("quiver_drift_data", {})
+        # Determine drift band from quiver_drift_data (set by _55_quiver_drift_tracker via context.data)
+        dd = self.agent.context.get_data("quiver_drift_data") or {}
         topic_novelty = dd.get("topic_novelty", 0.0)
         if topic_novelty >= 0.8:
             drift_band = "high"
@@ -159,11 +164,21 @@ class GhostChorus(Extension):
             anchor_terms = [a.get("term", "") for a in pattern_anchors[:5]]
             pattern_section = f"Active pattern anchors: {', '.join(anchor_terms)}"
 
+        # Step 3.5: Determine abstraction level from epitaph pool depth
+        pool_depth = get_epitaph_pool_depth(embedding=embedding)
+        if pool_depth >= 9:
+            abstraction_level = "ambient"
+        elif pool_depth >= 4:
+            abstraction_level = "composite"
+        else:
+            abstraction_level = "specific"
+
         # Step 4: Coaching synthesis via utility model
         prompt_msg = self.agent.read_prompt(
             "ghost_chorus_synthesis.md",
             context_shape=chorus_mode,
             drift_band=drift_band,
+            abstraction_level=abstraction_level,
             pattern_anchors_section=pattern_section,
             invariants_block=invariants_block,
         )
@@ -185,15 +200,17 @@ class GhostChorus(Extension):
         # Step 5: Injection — write to extras_persistent
         # The [GHOST CHORUS] tags are for the extras_persistent key boundary only
         loop_data.extras_persistent["ghost_chorus"] = coaching
-        loop_data.extras_persistent["_chorus_epitaph_ids"] = [
+        self.agent.context.set_data("_chorus_epitaph_ids", [
             ep["id"] for ep in epitaphs if ep.get("id")
-        ]
+        ])
 
         # Telemetry: chorus_activation
         try:
             from _helpers.chorus_telemetry import log_chorus_event
             log_chorus_event("chorus_activation", {
                 "chorus_mode": chorus_mode,
+                "abstraction_level": abstraction_level,
+                "pool_depth": pool_depth,
                 "epitaph_ids": [ep["id"] for ep in epitaphs if ep.get("id")],
                 "epitaph_ages": [ep.get("age_days", 0) for ep in epitaphs],
                 "epitaph_weights": [ep.get("effective_weight", 0) for ep in epitaphs],
@@ -226,12 +243,12 @@ class GhostChorus(Extension):
             return "recovery_attempt"
 
         # Under pressure: retries in progress
-        retries = extras.get("ecotone_retries", 0)
+        retries = self.agent.context.get_data("ecotone_retries") or 0
         if retries > 0:
             return "under_pressure"
 
-        # Novel territory: high topic novelty from quiver_drift_data
-        drift_data = extras.get("quiver_drift_data", {})
+        # Novel territory: high topic novelty from quiver_drift_data (context.data)
+        drift_data = self.agent.context.get_data("quiver_drift_data") or {}
         topic_novelty = drift_data.get("topic_novelty", 0.0)
         if topic_novelty >= 0.60:
             # Check user message for more specific shapes

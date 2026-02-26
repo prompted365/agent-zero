@@ -204,7 +204,7 @@ class EpitaphExtraction(Extension):
             if code_match:
                 failure_code = code_match.group(1)
 
-            drift_data = loop_data.extras_persistent.get("quiver_drift_data", {})
+            drift_data = self.agent.context.get_data("quiver_drift_data") or {}
             failures.append({
                 "failure_code": failure_code,
                 "evidence": feedback,

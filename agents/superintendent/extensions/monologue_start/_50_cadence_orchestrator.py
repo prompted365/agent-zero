@@ -23,6 +23,12 @@ from python.helpers.extension import Extension
 from agent import LoopData
 from python.helpers.log import LogItem
 
+try:
+    from _helpers.signal_emitter import emit_signal, make_dedup_signal_id
+    _HAS_SIGNAL_EMITTER = True
+except ImportError:
+    _HAS_SIGNAL_EMITTER = False
+
 CADENCE_STATE_DIR = os.environ.get(
     "CADENCE_STATE_DIR",
     "/workspace/operationTorque/cadence-state",
@@ -85,7 +91,7 @@ TRIGGERS = [
 class CadenceOrchestrator(Extension):
     __version__ = "1.0.0"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[cadence_state]"
+    __schema__ = "AgentContext.data[cadence_state]; LoopData.extras_persistent[cadence_directives]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Only fire on first iteration of a monologue
@@ -114,6 +120,32 @@ class CadenceOrchestrator(Extension):
                         "last_run_iso": datetime.now(timezone.utc).isoformat(),
                     }
 
+            # Emit Siren signal for severely overdue triggers (>2x interval)
+            if _HAS_SIGNAL_EMITTER:
+                for trigger in TRIGGERS:
+                    name = trigger["name"]
+                    last_run = state.get(name, {}).get("last_run", 0)
+                    interval_sec = trigger["interval_minutes"] * 60
+                    overdue_sec = now - last_run
+                    if last_run > 0 and overdue_sec >= interval_sec * 2:
+                        sig_id = make_dedup_signal_id("cadence", f"stale_{name}")
+                        emit_signal(
+                            signal_id=sig_id,
+                            kind="TENSION",
+                            band="COGNITIVE",
+                            subsystem="cadence",
+                            source="_50_cadence_orchestrator.py:execute",
+                            signature=f"cadence_stale_{name}",
+                            volume=30,
+                            volume_rate=5,
+                            ttl_hours=48,
+                            suggested_checks=[
+                                f"Check why {name} hasn't run in {overdue_sec / 3600:.1f}h (expected every {trigger['interval_minutes']}min)",
+                                "Verify Mogul is processing cadence directives",
+                            ],
+                            summary=f"Scheduled trigger '{name}' is {overdue_sec / interval_sec:.1f}x overdue. Last run: {state.get(name, {}).get('last_run_iso', 'never')}.",
+                        )
+
             if not due_triggers:
                 log_item.update(heading="Cadence orchestrator: no triggers due.")
                 return
@@ -122,7 +154,7 @@ class CadenceOrchestrator(Extension):
             self._save_state(state)
 
             # Also save to extras_persistent for within-session access
-            loop_data.extras_persistent["cadence_state"] = state
+            self.agent.context.set_data("cadence_state", state)
 
             # Build injection directive
             directives = []

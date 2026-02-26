@@ -11,11 +11,49 @@ from python.helpers.shell_ssh import SSHInteractiveSession
 from python.helpers.docker import DockerContainerManager
 from python.helpers.strings import truncate_text as truncate_text_string
 from python.helpers.messages import truncate_text as truncate_text_agent
+import os
 import re
+import sys
 
 # Epistemic Compression Gate — Nano-UCoin tool execution economics
 GENESIS_GRANT = 2_000_000  # 2M nUC — Phase 0 subsidized physics
 BASE_FEE = 10              # nUC per tool execution
+
+# Motivation Layer — PRESTIGE band detection for external distribution
+# Physics enforcement: detect commands that publish/distribute externally.
+# Internal creation = COGNITIVE (allowed). External distribution = PRESTIGE (blocked).
+PRESTIGE_DISTRIBUTION_PATTERNS = [
+    re.compile(r"curl\s+.*(?:-X\s*POST|-d\s).*(?:api\.twitter|api\.x\.com|medium\.com/p|api\.linkedin|mastodon|bluesky|substack)", re.IGNORECASE),
+    re.compile(r"(?:twurl|toot|tweet)\s+", re.IGNORECASE),
+    re.compile(r"(?:publish|broadcast|announce)\s+.*(?:blog|post|article|thread|tweet)", re.IGNORECASE),
+    re.compile(r"gh\s+release\s+create", re.IGNORECASE),
+]
+
+# --- Intent Gate: content-aware PRESTIGE detection (Bridge 2 physics) ---
+# Lazy-loaded NaiveSurveillance singleton for classify_intent().
+# Complements PRESTIGE_DISTRIBUTION_PATTERNS (which catch specific commands)
+# by analyzing code CONTENT for prestige pursuit + publication intent.
+_intent_gate_surveillance = None
+_intent_gate_init_attempted = False
+
+
+def _get_intent_gate():
+    """Lazy-init NaiveSurveillance for intent gate. Returns None on failure."""
+    global _intent_gate_surveillance, _intent_gate_init_attempted
+    if _intent_gate_init_attempted:
+        return _intent_gate_surveillance
+    _intent_gate_init_attempted = True
+    try:
+        workspace = os.environ.get("WORKSPACE_DIR", "/workspace/operationTorque")
+        fc_src = os.path.join(workspace, "fusion_core_repo", "src")
+        if fc_src not in sys.path:
+            sys.path.insert(0, fc_src)
+        from fusion_core.naive_surveillance import NaiveSurveillance
+        shapes_path = os.path.join(workspace, "compliance-modules", "archetype_shapes.json")
+        _intent_gate_surveillance = NaiveSurveillance(shapes_path=shapes_path)
+    except Exception:
+        _intent_gate_surveillance = None
+    return _intent_gate_surveillance
 
 # Timeouts for python, nodejs, and terminal runtimes.
 CODE_EXEC_TIMEOUTS: dict[str, int] = {
@@ -82,6 +120,56 @@ class CodeExecution(Tool):
                 break_loop=False,
             )
         # --- End pre-exec gate ---
+
+        # --- Motivation Layer: PRESTIGE band detection ---
+        code = self.args.get("code", "")
+        for pat in PRESTIGE_DISTRIBUTION_PATTERNS:
+            if pat.search(code):
+                self.agent.context.set_data("motivation_flag", "PRESTIGE")
+                self.agent.context.set_data(
+                    "motivation_flag_source",
+                    f"code_execution_tool:{code[:100]}",
+                )
+                return Response(
+                    message=(
+                        f"[MOTIVATION_GATE: PRESTIGE_BLOCKED] External distribution "
+                        f"command detected. Internal creation is allowed (COGNITIVE band), "
+                        f"but publishing/broadcasting to external audiences is blocked "
+                        f"(PRESTIGE band). If this is a legitimate COGNITIVE operation, "
+                        f"rephrase the command to avoid external distribution patterns."
+                    ),
+                    break_loop=False,
+                )
+
+        # --- Intent Gate: content-aware PRESTIGE detection (Bridge 2) ---
+        # Fires when ALL THREE conditions are true:
+        #   1. Code content loads on prestige-associated archetypes (>0.3)
+        #   2. Code execution is a deliverable action (always true here)
+        #   3. Text contains publication intent markers
+        # Discussion is ALWAYS allowed — only blocks prestige-publicizing deliverables.
+        gate = _get_intent_gate()
+        if gate is not None:
+            try:
+                intent = gate.classify_intent(code, action_type="code_execution")
+                if intent.blocked:
+                    self.agent.context.set_data("motivation_flag", "PRESTIGE")
+                    self.agent.context.set_data(
+                        "motivation_flag_source",
+                        f"intent_gate:{intent.reason[:120]}",
+                    )
+                    return Response(
+                        message=(
+                            f"[MOTIVATION_GATE: INTENT_BLOCKED] {intent.reason} "
+                            f"Band: {intent.motivation_band}. "
+                            f"Internal analysis and discussion of these patterns is "
+                            f"allowed (COGNITIVE). Creating assets for external "
+                            f"publication with prestige-associated content is blocked."
+                        ),
+                        break_loop=False,
+                    )
+            except Exception:
+                pass  # Graceful degradation — regex gate above still protects
+        # --- End motivation gate ---
 
         runtime = self.args.get("runtime", "").lower().strip()
         session = int(self.args.get("session", 0))

@@ -14,6 +14,8 @@ needs more, it should use targeted commands (grep, jq, head, wc -l).
 Fail-silent: truncation and dump errors never crash the tool pipeline.
 """
 
+__version__ = "1.0.0"
+
 import os
 from datetime import datetime
 from typing import Any

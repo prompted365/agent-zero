@@ -15,6 +15,8 @@ Fail-silent: If the foreman is unreachable, no injection occurs.
 No error, no log spam. The swarm is simply not running.
 """
 
+__version__ = "1.0.0"
+
 import os
 import re
 import aiohttp
@@ -40,7 +42,7 @@ COOLDOWN_CYCLES = int(os.environ.get("IDEA_WHISPER_COOLDOWN", "10"))
 class IdeaWhisper(Extension):
     __version__ = "1.1.0"
     __requires_a0__ = ">=0.8"
-    __schema__ = "LoopData.extras_persistent[swarm_ideas, _whisper_last_ids, _whisper_last_gen] (write)"
+    __schema__ = "LoopData.extras_persistent[swarm_ideas]; AgentContext.data[_whisper_last_ids, _whisper_last_gen]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         # Relevance gate: skip if conversation doesn't touch trading/trust/swarm
@@ -86,8 +88,8 @@ class IdeaWhisper(Extension):
             for idea in tier_ideas:
                 current_ids.add(idea.get("id", ""))
 
-        last_ids = set(loop_data.extras_persistent.get("_whisper_last_ids", []))
-        last_gen = loop_data.extras_persistent.get("_whisper_last_gen", 0)
+        last_ids = set(self.agent.context.get_data("_whisper_last_ids") or [])
+        last_gen = self.agent.context.get_data("_whisper_last_gen") or 0
 
         # If same idea set AND within cooldown window, skip injection
         if current_ids == last_ids and (last_cycle_gen - last_gen) < COOLDOWN_CYCLES:
@@ -135,8 +137,8 @@ class IdeaWhisper(Extension):
 
         whisper = "\n\n".join(sections)
         loop_data.extras_persistent["swarm_ideas"] = whisper
-        loop_data.extras_persistent["_whisper_last_ids"] = list(current_ids)
-        loop_data.extras_persistent["_whisper_last_gen"] = last_cycle_gen
+        self.agent.context.set_data("_whisper_last_ids", list(current_ids))
+        self.agent.context.set_data("_whisper_last_gen", last_cycle_gen)
 
         self.agent.context.log.log(
             type="util",
