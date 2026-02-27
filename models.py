@@ -671,6 +671,7 @@ class LiteLLMEmbeddingWrapper(Embeddings):
     model_name: str
     kwargs: dict = {}
     a0_model_conf: Optional[ModelConfig] = None
+    output_dim: Optional[int] = None
 
     def __init__(
         self,
@@ -683,18 +684,33 @@ class LiteLLMEmbeddingWrapper(Embeddings):
         # For OpenRouter (provider=openai + api_base), prefix tells LiteLLM "use OpenAI format"
         # while api_base redirects the actual request to OpenRouter
         self.model_name = f"{provider}/{model}"
+        # Pop output_dim before it reaches litellm (client-side MRL truncation)
+        self.output_dim = kwargs.pop("output_dim", None)
         self.kwargs = kwargs
         self.a0_model_conf = model_config
+
+    @staticmethod
+    def _mrl_truncate(vec: List[float], dim: int) -> List[float]:
+        """Matryoshka Representation Learning truncation: slice + L2 normalize."""
+        import math
+        truncated = vec[:dim]
+        norm = math.sqrt(sum(x * x for x in truncated))
+        if norm > 0:
+            return [x / norm for x in truncated]
+        return truncated
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         # Apply rate limiting if configured
         apply_rate_limiter_sync(self.a0_model_conf, " ".join(texts))
 
         resp = embedding(model=self.model_name, input=texts, **self.kwargs)
-        return [
+        vectors = [
             item.get("embedding") if isinstance(item, dict) else item.embedding  # type: ignore
             for item in resp.data  # type: ignore
         ]
+        if self.output_dim:
+            vectors = [self._mrl_truncate(v, self.output_dim) for v in vectors]
+        return vectors
 
     def embed_query(self, text: str) -> List[float]:
         # Apply rate limiting if configured
@@ -702,7 +718,10 @@ class LiteLLMEmbeddingWrapper(Embeddings):
 
         resp = embedding(model=self.model_name, input=[text], **self.kwargs)
         item = resp.data[0]  # type: ignore
-        return item.get("embedding") if isinstance(item, dict) else item.embedding  # type: ignore
+        vec = item.get("embedding") if isinstance(item, dict) else item.embedding  # type: ignore
+        if self.output_dim:
+            vec = self._mrl_truncate(vec, self.output_dim)
+        return vec
 
 
 class LocalSentenceTransformerWrapper(Embeddings):
