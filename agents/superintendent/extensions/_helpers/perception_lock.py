@@ -153,9 +153,9 @@ def get_epitaph_pool_depth(
             # Attempt to build a probe vector of correct dimension
             try:
                 col_info = _ruvector_get(f"/collections/{COLLECTION}")
-                dim = col_info.get("dimension", 4096)
+                dim = col_info.get("dimension", 384)
             except Exception:
-                dim = 4096
+                dim = 384
             embedding = [0.001] * dim  # Near-zero but non-zero to avoid NaN
 
         search_result = _ruvector_post("/search", {

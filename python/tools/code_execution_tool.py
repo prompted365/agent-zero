@@ -141,31 +141,66 @@ class CodeExecution(Tool):
                     break_loop=False,
                 )
 
-        # --- Intent Gate: content-aware PRESTIGE detection (Bridge 2) ---
-        # Fires when ALL THREE conditions are true:
-        #   1. Code content loads on prestige-associated archetypes (>0.3)
-        #   2. Code execution is a deliverable action (always true here)
-        #   3. Text contains publication intent markers
-        # Discussion is ALWAYS allowed — only blocks prestige-publicizing deliverables.
+        # --- Publication Vector Gate v2: surveillance-aware intent detection ---
+        # The drift tracker (prompt-time) runs observe() on the user message and
+        # stores the snapshot in AgentContext.data. We read it here so the physics
+        # gate sees what surveillance already detected — no redundant decomposition,
+        # shared state between prompt-time observation and execution-time enforcement.
+        #
+        # Publication vector is the DOMINANT classifier. When detected, the teeth
+        # (prestige/extraction archetypes) determine the band. Certain bands don't
+        # pass. The business case alongside does NOT override the band.
         gate = _get_intent_gate()
         if gate is not None:
             try:
-                intent = gate.classify_intent(code, action_type="code_execution")
+                # Read surveillance snapshot from drift tracker (prompt-time)
+                surveillance_snapshot = self.agent.context.get_data("_surveillance_snapshot")
+
+                # Get user message from surveillance snapshot (drift tracker stored it)
+                # or fall back to extracting from conversation history
+                user_msg = ""
+                if surveillance_snapshot:
+                    user_msg = surveillance_snapshot.get("user_message", "")
+                if not user_msg:
+                    try:
+                        msgs = getattr(self.agent.history, "messages", [])
+                        for msg in reversed(msgs):
+                            role = getattr(msg, "role", "")
+                            if role == "user":
+                                content = getattr(msg, "content", "") or ""
+                                user_msg = content[:2000]
+                                break
+                    except Exception:
+                        pass
+
+                intent = gate.classify_vector(
+                    user_message=user_msg,
+                    tool_code=code,
+                    action_type="code_execution",
+                    surveillance_snapshot=surveillance_snapshot,
+                )
                 if intent.blocked:
                     self.agent.context.set_data("motivation_flag", "PRESTIGE")
                     self.agent.context.set_data(
                         "motivation_flag_source",
-                        f"intent_gate:{intent.reason[:120]}",
+                        f"vector_gate:{intent.reason[:200]}",
                     )
                     return Response(
                         message=(
-                            f"[MOTIVATION_GATE: INTENT_BLOCKED] {intent.reason} "
+                            f"[MOTIVATION_GATE: VECTOR_BLOCKED] {intent.reason} "
                             f"Band: {intent.motivation_band}. "
                             f"Internal analysis and discussion of these patterns is "
-                            f"allowed (COGNITIVE). Creating assets for external "
-                            f"publication with prestige-associated content is blocked."
+                            f"allowed (COGNITIVE). Creating deliverables that ride "
+                            f"a publication vector with banned-band teeth is blocked "
+                            f"at the physics layer."
                         ),
                         break_loop=False,
+                    )
+
+                # Burn pressure: store multiplier for post-exec cost calculation
+                if intent.burn_multiplier > 1.0:
+                    self.agent.context.set_data(
+                        "_motivation_burn_multiplier", intent.burn_multiplier,
                     )
             except Exception:
                 pass  # Graceful degradation — regex gate above still protects
@@ -207,7 +242,16 @@ class CodeExecution(Tool):
         # --- Epistemic Compression Gate: Post-exec cost math ---
         raw_output_chars = len(response)
         context_tax = raw_output_chars // 100
-        cost = BASE_FEE + context_tax
+        base_cost = BASE_FEE + context_tax
+
+        # Burn pressure: motivation-aware cost multiplier
+        # Maps to Nautilus Swarm burn channels: gap_burn (claimed vs detected
+        # motivation), demurrage (sustained patterns), agent_penalty (teeth on
+        # publication vectors). Applied by classify_vector() pre-exec.
+        burn_mult = self.agent.context.get_data("_motivation_burn_multiplier") or 1.0
+        cost = int(base_cost * burn_mult)
+        if burn_mult > 1.0:
+            self.agent.context.set_data("_motivation_burn_multiplier", 1.0)  # Reset after use
 
         balance = self.agent.context.get_data("ucoin_balance")
         if balance is None:

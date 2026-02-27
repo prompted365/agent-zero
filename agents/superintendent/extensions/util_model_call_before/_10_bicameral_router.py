@@ -285,17 +285,14 @@ class BicameralRouter(Extension):
             ),
         )
 
-        # 8. Update active context from extras_persistent if available
+        # 8. Update active context from AgentContext.data (internal bookkeeping)
         try:
-            loop_data = getattr(self.agent, "loop_data", None)
-            if loop_data:
-                extras = getattr(loop_data, "extras_persistent", {})
-                drift_data = extras.get("quiver_drift_data", {})
-                chorus_data = extras.get("ghost_chorus_meta", {})
-                _surface.update_active_context(
-                    drift_band=drift_data.get("drift_band", ""),
-                    chorus_mode=chorus_data.get("mode", ""),
-                    topic_novelty=drift_data.get("topic_novelty", 0.0),
-                )
+            drift_data = self.agent.context.get_data("quiver_drift_data") or {}
+            chorus_meta = self.agent.context.get_data("_chorus_meta") or {}
+            _surface.update_active_context(
+                drift_band=drift_data.get("drift_band", ""),
+                chorus_mode=chorus_meta.get("mode", ""),
+                topic_novelty=drift_data.get("topic_novelty", 0.0),
+            )
         except Exception:
             pass  # Context enrichment is best-effort

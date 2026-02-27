@@ -52,6 +52,7 @@ def emit_signal(
     suggested_checks=None,
     links=None,
     summary="",
+    trace_id=None,
 ):
     """Emit a new Siren signal to the JSONL store.
 
@@ -109,6 +110,8 @@ def emit_signal(
             "tick_count": 0,
             "created_at": now.isoformat(),
         }
+        if trace_id:
+            entry["trace_id"] = trace_id
 
         _append_signal(entry)
     except Exception:

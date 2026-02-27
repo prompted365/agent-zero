@@ -95,13 +95,51 @@ class EcotoneIntegrity(Extension):
         if not response or self._is_tool_response(response):
             return
 
+        # Resolve trace_id for this pipeline run
+        _trace_id = (drift_data or {}).get("trace_id") or self.agent.context.get_data("_current_trace_id")
+
+        # --- LOCK Path: high-confidence confirmed alert requires human review ---
+        # LOCK does NOT pop the response — it stays committed. Instead, injects
+        # a governance notice and emits a PRIMITIVE BEACON. The human reviews via
+        # /siren and the response's trace_id links the audit trail.
+        lock_info = self.agent.context.get_data("lock_candidate")
+        if lock_info and isinstance(lock_info, dict):
+            lock_archetype = lock_info.get("archetype", "unknown")
+            lock_z = lock_info.get("z_score", 0.0)
+            lock_reg = lock_info.get("regulation_state", "unknown")
+
+            loop_data.extras_persistent["ecotone_lock"] = (
+                f"[LOCK — Human Review Required] "
+                f"High-confidence {lock_archetype} detection at z={lock_z:.1f}σ "
+                f"(regulation: {lock_reg}). "
+                f"Response committed but flagged for human review. "
+                f"Trace: {_trace_id or 'unknown'}"
+            )
+
+            self._emit_failure_signal(
+                {"failure_code": "LOCK", "evidence": f"archetype={lock_archetype}, z={lock_z}, reg={lock_reg}"},
+                drift, 0, trace_id=_trace_id,
+            )
+            self._log_epitaph(drift, {"failure_code": "LOCK", "check_type": "lock_candidate",
+                "evidence": f"Confirmed {lock_archetype} at z={lock_z}σ, {lock_reg}"}, 0, response)
+
+            # Clear the lock after handling (one-shot per monologue)
+            self.agent.context.set_data("lock_candidate", None)
+
+            self.agent.context.log.log(
+                type="warning",
+                heading=f"Ecotone: LOCK — {lock_archetype} at z={lock_z:.1f}σ (trace: {_trace_id})",
+            )
+            # Don't pop, don't retry — response stays, signal emitted
+            return
+
         # --- Motivation Layer: perception audit ---
         # Runs independently of drift threshold — catches prestige optimization
         # even when memory systems agree.
         if motivation_flag == "PRESTIGE":
             verdict = await self._check_motivation(response)
             if not verdict["pass"]:
-                self._emit_failure_signal(verdict, drift, 0)
+                self._emit_failure_signal(verdict, drift, 0, trace_id=_trace_id)
                 self._log_epitaph(drift, verdict, 0, response)
                 # Pop the response and inject feedback
                 if self.agent.history.current.messages:
@@ -141,6 +179,10 @@ class EcotoneIntegrity(Extension):
 
         # Layer 1: Check for insufficient grounding (system-meta-only substrate)
         verdict = self._check_grounding(faiss_unique, ruvector_unique)
+
+        # Layer 1.5: LINEAGE validation — check milestone coherence when milestones matched
+        if verdict is None:
+            verdict = self._check_lineage(priors_anchors, response)
 
         # Layer 2: Deterministic pre-check for smoothing (saves utility tokens)
         if verdict is None and drift > SMOOTHING_DRIFT_FLOOR:
@@ -203,7 +245,7 @@ class EcotoneIntegrity(Extension):
         # --- FAILURE PATH ---
 
         # Emit outbound Siren signal on failure (shared bind-mount signal bus)
-        self._emit_failure_signal(verdict, drift, retries)
+        self._emit_failure_signal(verdict, drift, retries, trace_id=_trace_id)
 
         # Check retry cap
         if retries >= MAX_RETRIES:
@@ -230,6 +272,23 @@ class EcotoneIntegrity(Extension):
 
         # Log epitaph
         self._log_epitaph(drift, verdict, retries, response)
+
+        # Store failure data in AgentContext.data for epitaph extraction.
+        # extras_persistent["ecotone_feedback"] gets popped on gate pass (line 173),
+        # but AgentContext.data survives across loop iterations within the monologue.
+        # This ensures _65_epitaph_extraction.py at monologue_end can always find
+        # the failure even if the gate passes on retry.
+        ecotone_failures = self.agent.context.get_data("_ecotone_failures") or []
+        trace_id = drift_data.get("trace_id") or self.agent.context.get_data("_current_trace_id")
+        ecotone_failures.append({
+            "failure_code": verdict.get("failure_code", "UNKNOWN"),
+            "evidence": verdict.get("evidence", "")[:500],
+            "drift_score": drift,
+            "pattern_anchors": drift_data.get("pattern_anchors", []),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "trace_id": trace_id,
+        })
+        self.agent.context.set_data("_ecotone_failures", ecotone_failures)
 
         # Telemetry: chorus_outcome (fail)
         try:
@@ -267,6 +326,22 @@ class EcotoneIntegrity(Extension):
             anchor_terms = [a["term"] for a in pattern_anchors[:5]]
             feedback += f"\nPattern resonance detected: {', '.join(anchor_terms)}. Consider how these civilization patterns relate to your response."
 
+        # D→B regulated signature consumption: enrich retry feedback with regulation state
+        regulated_sigs = drift_data.get("regulated_signatures", [])
+        active_regs = [
+            s for s in regulated_sigs
+            if isinstance(s, dict) and s.get("regulation_state") in ("sensitized", "saturated")
+        ]
+        if active_regs:
+            reg_names = [
+                f"{s['archetype']}({s['regulation_state']}, z={s.get('z_score', 0):.1f})"
+                for s in active_regs[:3]
+            ]
+            feedback += (
+                f"\nRegulated archetypes active: {', '.join(reg_names)}. "
+                f"These patterns are under surveillance — consider their influence on your response."
+            )
+
         loop_data.extras_persistent["ecotone_feedback"] = feedback
         self.agent.context.set_data("ecotone_retries", retries + 1)
 
@@ -284,6 +359,57 @@ class EcotoneIntegrity(Extension):
         if len(stripped) < 50:
             return True
         return False
+
+    def _check_lineage(self, pattern_anchors: list, response: str) -> dict | None:
+        """Check milestone lineage coherence when civilization patterns are detected.
+
+        LINEAGE validation plane: when 2+ milestones are matched, checks whether
+        they share lineage edges (structural connections). Incoherent jumps
+        (e.g., referencing collapse patterns without the prior conditions)
+        indicate the response is pattern-matching on surface terms without
+        understanding the structural sequence.
+
+        Returns a failure verdict if incoherent, None if OK or not applicable.
+        """
+        try:
+            from _helpers.pattern_cache import check_lineage_coherence
+
+            milestone_ids = [
+                a["library_id"]
+                for a in pattern_anchors
+                if isinstance(a, dict)
+                and a.get("library_type") == "milestone"
+                and not a.get("suppressed", False)
+            ]
+            if len(milestone_ids) < 2:
+                return None  # Need 2+ milestones for coherence check
+
+            result = check_lineage_coherence(milestone_ids)
+            if result["coherent"]:
+                return None  # Lineage is coherent — pass
+
+            # Incoherent lineage: orphan milestones with no connection to the others
+            orphan_count = len(result["orphans"])
+            if orphan_count == 0:
+                return None  # No orphans — connected enough
+
+            # Only fail if more than half the milestones are orphans
+            # (loose connections are expected; total disconnection is the signal)
+            if orphan_count <= len(milestone_ids) // 2:
+                return None
+
+            return {
+                "pass": False,
+                "failure_code": "LINEAGE_INCOHERENT",
+                "evidence": (
+                    f"LINEAGE validation: {result['details']}. "
+                    f"Matched milestones: {', '.join(milestone_ids)}. "
+                    f"Response references structurally disconnected civilization patterns."
+                ),
+                "check_type": "lineage_check",
+            }
+        except Exception:
+            return None  # Fail-open: lineage check is enrichment, not critical path
 
     def _check_grounding(self, faiss_unique: list, ruvector_unique: list) -> dict | None:
         """Check if memory substrate is all system-meta (no domain substance)."""
@@ -465,8 +591,23 @@ class EcotoneIntegrity(Extension):
             drift_data = self.agent.context.get_data("quiver_drift_data") or {}
             pattern_anchor_count = len(drift_data.get("pattern_anchors", []))
 
+            # D→B regulated signature consumption: include regulation state in epitaph
+            regulated_sigs = drift_data.get("regulated_signatures", [])
+            reg_summary = [
+                {
+                    "archetype": s["archetype"],
+                    "z": s.get("z_score", 0),
+                    "state": s.get("regulation_state", ""),
+                    "confirmed": s.get("harpoon_confirmed", False),
+                }
+                for s in regulated_sigs[:5]
+                if isinstance(s, dict)
+            ]
+
+            trace_id = drift_data.get("trace_id") or self.agent.context.get_data("_current_trace_id")
             entry = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "trace_id": trace_id,
                 "drift_score": round(drift, 4),
                 "failure_code": verdict.get("failure_code", "SHALLOW_PASS") if not shallow_pass else "SHALLOW_PASS",
                 "check_type": verdict.get("check_type", "unknown"),
@@ -476,6 +617,7 @@ class EcotoneIntegrity(Extension):
                 "retry_number": retry_number,
                 "shallow_pass": shallow_pass,
                 "pattern_anchors": pattern_anchor_count,
+                "regulated_signatures": reg_summary,
                 "cadence_beat": (iteration % 4) + 1 if iteration >= 0 else None,
                 "cadence_measure": (iteration // 4) + 1 if iteration >= 0 else None,
                 "cadence_phase": cadence_phases[iteration % 4] if iteration >= 0 else None,
@@ -495,7 +637,7 @@ class EcotoneIntegrity(Extension):
             except Exception:
                 pass
 
-    def _emit_failure_signal(self, verdict: dict, drift: float, retries: int):
+    def _emit_failure_signal(self, verdict: dict, drift: float, retries: int, trace_id: str = None):
         """Emit a Siren signal to the shared bind-mount signal bus on gate failure.
 
         Failure code mapping:
@@ -545,6 +687,7 @@ class EcotoneIntegrity(Extension):
                 links=[
                     "vendor/agent-zero/agents/superintendent/extensions/message_loop_end/_60_ecotone_integrity.py",
                 ],
+                trace_id=trace_id,
             )
         except Exception:
             # Fail-silent: signal emission must never crash the gate

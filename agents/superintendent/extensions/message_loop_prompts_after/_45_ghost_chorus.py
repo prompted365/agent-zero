@@ -34,6 +34,55 @@ _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.perception_lock import retrieve_coaching_epitaphs, get_epitaph_pool_depth
+import json as _json
+
+# Lightweight current conformation from signal store (fail-open)
+_SIGNAL_DIR = os.environ.get(
+    "SIGNAL_STORE_DIR",
+    "/workspace/operationTorque/audit-logs/signals",
+)
+
+
+def _get_current_conformation_snapshot() -> dict | None:
+    """Build a lightweight conformation snapshot from today's signal store.
+
+    Used for shape-proximity methylation — gives retrieve_coaching_epitaphs()
+    the current system shape to compare against epitaph birth conformations.
+    """
+    try:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        sig_path = os.path.join(_SIGNAL_DIR, f"{today}.jsonl")
+        if not os.path.isfile(sig_path):
+            return None
+
+        # Scan for latest state of each signal (last-entry-wins)
+        signals_by_id: dict[str, dict] = {}
+        with open(sig_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                    sid = entry.get("id", "")
+                    if sid:
+                        signals_by_id[sid] = entry
+                except _json.JSONDecodeError:
+                    continue
+
+        # Filter to active/working signals only
+        active = [
+            s for s in signals_by_id.values()
+            if s.get("status") in ("active", "working", "acknowledged")
+        ]
+
+        return {
+            "active_signals": active,
+            "active_warrants": [],  # warrants live in same store but rarely present
+        }
+    except Exception:
+        return None
 
 # Context shape detection keywords
 _CONVERGING_KEYWORDS = re.compile(
@@ -113,10 +162,13 @@ class GhostChorus(Extension):
 
         # Pass chorus_mode as context_shape for shape-match bonus on overlapping values
         # (novel_territory, converging_constraints, identity_pressure exist in both vocabularies)
+        # current_conformation enables shape-proximity methylation (ASO targeting)
+        current_conf = _get_current_conformation_snapshot()
         epitaphs = retrieve_coaching_epitaphs(
             embedding=embedding,
             context_shape=chorus_mode,
             top_k=max_epitaphs,
+            current_conformation=current_conf,
         )
 
         if not epitaphs:
@@ -203,6 +255,12 @@ class GhostChorus(Extension):
         self.agent.context.set_data("_chorus_epitaph_ids", [
             ep["id"] for ep in epitaphs if ep.get("id")
         ])
+        # Metadata for bicameral router (internal bookkeeping → AgentContext.data)
+        self.agent.context.set_data("_chorus_meta", {
+            "mode": chorus_mode,
+            "abstraction_level": abstraction_level,
+            "pool_depth": pool_depth,
+        })
 
         # Telemetry: chorus_activation
         try:
@@ -215,6 +273,11 @@ class GhostChorus(Extension):
                 "epitaph_ages": [ep.get("age_days", 0) for ep in epitaphs],
                 "epitaph_weights": [ep.get("effective_weight", 0) for ep in epitaphs],
                 "hypothetical_age_weights": [ep.get("hypothetical_age_weight", 0) for ep in epitaphs],
+                "dynamic_methylation_applied": [ep.get("dynamic_methylation_applied", False) for ep in epitaphs],
+                "birth_fp_present": [ep.get("birth_fp_present", False) for ep in epitaphs],
+                "current_fp_present": [ep.get("current_fp_present", False) for ep in epitaphs],
+                "static_methylation": [ep.get("static_methylation", 0) for ep in epitaphs],
+                "dynamic_methylation": [ep.get("dynamic_methylation", 0) for ep in epitaphs],
                 "drift_band": drift_band,
                 "synthesis_length": len(coaching),
                 "topic_novelty": topic_novelty,

@@ -91,12 +91,22 @@ class AnchorTensionTracker(Extension):
             await self._measure_tension(loop_data, log_item)
         except Exception as e:
             err = errors.format_error(e)
+            short = str(e)[:120]
             log_item.update(
-                heading="Anchor tension: RuVector not available (operating on FAISS only)",
+                heading=f"Anchor tension: measurement failed ({short})",
             )
 
     async def _measure_tension(self, loop_data: LoopData, log_item: LogItem):
         global _drift_cache
+        # Generate or reuse trace_id for this monologue.
+        # Per-monologue scope: generated once at iteration 0, stored in AgentContext.data
+        # so all hook points (drift tracker, ecotone gate, signal emitter) share it.
+        import uuid
+        trace_id = self.agent.context.get_data("_current_trace_id")
+        if not trace_id:
+            trace_id = str(uuid.uuid4())[:12]
+            self.agent.context.set_data("_current_trace_id", trace_id)
+
         # Build search query from current context
         user_msg = loop_data.user_message.output_text() if loop_data.user_message else ""
         history = self.agent.history.output_text()[-2000:]
@@ -271,13 +281,15 @@ class AnchorTensionTracker(Extension):
             except Exception:
                 pass  # Surveillance is enrichment, not critical path
 
+        # Confirmed archetype families from Harpoon pattern scan (shared by Bridge 3 + LOCK)
+        confirmed_families = {
+            a["archetype_family"]
+            for a in pattern_anchors
+            if "archetype_family" in a
+        }
+
         # Bridge 3: Ping-pong amplification (cross-reference alerts with Harpoon matches)
         if surveillance_result and surveillance_result.alerts and _surv is not None:
-            confirmed_families = {
-                a["archetype_family"]
-                for a in pattern_anchors
-                if "archetype_family" in a
-            }
             for alert in surveillance_result.alerts:
                 try:
                     _surv.amplify(
@@ -310,6 +322,7 @@ class AnchorTensionTracker(Extension):
             "inter_store_novelty": inter_store_novelty,
             "query_isolation": query_isolation,
             "topic_novelty": topic_novelty,
+            "trace_id": trace_id,
             "pattern_anchors": pattern_anchors,
             "ruvector_neighbors": ruvector_neighbors,
             "faiss_texts": faiss_texts,
@@ -337,10 +350,105 @@ class AnchorTensionTracker(Extension):
                     for d in surveillance_result.cumulative_drifts[:3]
                 ]
 
+            # D→B Regulated Signatures: typed cross-clade contract
+            # Clade B (ecotone/Harpoon) consumes these without knowing Clade D internals
+            try:
+                reg_sigs = surveillance_result.to_regulated_signatures(
+                    confirmed_families=confirmed_families,
+                    trace_id=trace_id,
+                )
+                if reg_sigs:
+                    drift_data["regulated_signatures"] = [s.to_dict() for s in reg_sigs]
+            except Exception as e:
+                # Non-fatal but observable — if this contract breaks under enforcement,
+                # silent failure becomes "enforcement is blind" with no diagnostic.
+                self.agent.context.log.log(
+                    type="warning",
+                    heading=f"D→B RegulatedSignature failed [trace:{trace_id}]: {str(e)[:120]}",
+                )
+
+        # LOCK evaluation: pause-for-human on high-confidence confirmed alerts
+        # Conditions: z >= 3.0 (breakthrough), Harpoon-confirmed, regulation state
+        # is SENSITIZED or SATURATED (not HABITUATED — that means we've adapted)
+        LOCK_Z_THRESHOLD = 3.0
+        lock_info = None
+        if surveillance_result and surveillance_result.alerts:
+            for alert in surveillance_result.alerts:
+                if alert.archetype not in confirmed_families:
+                    continue
+                if abs(alert.z_score) < LOCK_Z_THRESHOLD:
+                    continue
+                reg = surveillance_result.regulation_states.get(alert.archetype)
+                if reg and reg.state.name in ("SENSITIZED", "SATURATED"):
+                    lock_info = {
+                        "archetype": alert.archetype,
+                        "z_score": round(alert.z_score, 2),
+                        "regulation_state": reg.state.name,
+                        "trace_id": trace_id,
+                    }
+                    break
+
+        if lock_info:
+            self.agent.context.set_data("lock_candidate", lock_info)
+            drift_data["lock_candidate"] = lock_info
+
         if topic_novelty >= DRIFT_THRESHOLD:
             self.agent.context.set_data("quiver_drift_data", drift_data)
         else:
             self.agent.context.set_data("quiver_drift_data", None)
+
+        # ALWAYS store surveillance snapshot for physics gate — independent of
+        # topic novelty. The gate needs archetype detection even on low-novelty
+        # messages (prestige patterns in well-covered territory score low novelty
+        # but carry dangerous teeth). Topic novelty gates LLM injection
+        # (extras_persistent), NOT enforcement.
+        if surveillance_result:
+            _TEETH_ARCHETYPES = {
+                "cautionary_fall", "greed_backfire", "cunning_triumph", "empire_cycle",
+            }
+            snap_amplitudes = {
+                a: float(surveillance_result.amplitudes[i])
+                for i, a in enumerate(
+                    _surv._archetypes if _surv else []
+                )
+            } if hasattr(surveillance_result, "amplitudes") else {}
+
+            snap_teeth = {
+                k: v for k, v in snap_amplitudes.items()
+                if k in _TEETH_ARCHETYPES and v > 0.05
+            }
+            # Merge semantic scores into teeth (catches natural language patterns)
+            if surveillance_result.semantic_scores:
+                for k in _TEETH_ARCHETYPES:
+                    sem_val = surveillance_result.semantic_scores.get(k, 0.0)
+                    if sem_val > 0.05:
+                        snap_teeth[k] = max(snap_teeth.get(k, 0.0), sem_val)
+
+            snap_reg_states = {}
+            if surveillance_result.regulation_states:
+                snap_reg_states = {
+                    k: v.state.name
+                    for k, v in surveillance_result.regulation_states.items()
+                }
+
+            snap_sustained = []
+            if surveillance_result.cumulative_drifts:
+                snap_sustained = [
+                    d.archetype
+                    for d in surveillance_result.cumulative_drifts
+                    if d.sustained
+                ]
+
+            self.agent.context.set_data("_surveillance_snapshot", {
+                "user_message": user_msg[:2000],
+                "amplitudes": snap_amplitudes,
+                "teeth": snap_teeth,
+                "regulation_states": snap_reg_states,
+                "cumulative_sustained": snap_sustained,
+                "confirmed_families": list(confirmed_families),
+                "trace_id": trace_id,
+                "alert_count": len(surveillance_result.alerts),
+            })
 
         # Cache results + embedding for subsequent iterations in this monologue
         # If RuVector failed, mark cache so next iteration retries instead of serving stale data
