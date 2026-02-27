@@ -1,20 +1,23 @@
 """
-Ecotone Integrity Gate — Post-Response Anchor Tension Integration Validator
+Ecotone Integrity Gate — Post-Response Governance Validator
 
 Fires at message_loop_end (after the LLM response + tool processing).
-When anchor tension was high (>= threshold), validates that the agent's response
-actually integrated competing FAISS and RuVector perspectives rather than
-smoothing over the tension with diplomatic non-answers.
+Validates EVERY natural-language response for governance violations.
+WAL mint is a governance event — unconditional on drift/novelty.
+Drift data enriches validation (memory context, pattern anchors) but does not
+gate it.
 
 Validation layers (in order):
 1. INSUFFICIENT_GROUNDING check — if memory substrate is all system-meta, flag
    the gap rather than penalizing the response for lacking integration material.
-2. Deterministic regex pre-check (cheap) — catch obvious smoothing collapses.
+2. Deterministic regex pre-check (cheap) — catch obvious smoothing collapses
+   (only when drift > SMOOTHING_DRIFT_FLOOR).
 3. Utility model audit (authoritative) — evaluates integration quality + prior
-   divergence when civilization priors are available.
+   divergence when drift data and civilization priors are available.
 
 On failure: pops the response from history, injects concrete feedback, and lets
-the natural message loop retry. Max 2 retries per monologue.
+the natural message loop retry. Max 2 retries per monologue. Failure always
+triggers WAL epitaph mint via _65_epitaph_extraction.py at monologue_end.
 """
 
 import os
@@ -80,13 +83,11 @@ class EcotoneIntegrity(Extension):
     __schema__ = "AgentContext.data[quiver_drift_data, ecotone_retries]; LoopData.extras_persistent[ecotone_feedback]"
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
-        # Only activate when tension tracker flagged high tension
-        # (quiver_drift_data is only set when topic_novelty >= QUIVER_DRIFT_THRESHOLD)
+        # Ecotone gate always validates responses — mint is a governance event,
+        # not a novelty event. Drift data enriches validation but does not gate it.
+        # (DIP-384 invariant: WAL mint is unconditional on governance events.)
         drift_data = self.agent.context.get_data("quiver_drift_data")
         motivation_flag = self.agent.context.get_data("motivation_flag")
-
-        if not drift_data and not motivation_flag:
-            return
 
         drift = drift_data["drift"] if drift_data else 0.0
 
@@ -164,36 +165,44 @@ class EcotoneIntegrity(Extension):
             # Clear flag on pass
             self.agent.context.set_data("motivation_flag", None)
 
-        if not drift_data:
-            return
-
         # Initialize retry counter
         retries = self.agent.context.get_data("ecotone_retries") or 0
 
-        faiss_unique = drift_data.get("faiss_texts", [])
-        ruvector_unique = drift_data.get("ruvector_texts", [])
+        # Drift data enriches validation but is optional — gate runs regardless.
+        # When drift_data is absent, validation uses empty defaults.
+        faiss_unique = (drift_data or {}).get("faiss_texts", [])
+        ruvector_unique = (drift_data or {}).get("ruvector_texts", [])
         # Combine pattern anchors with priors texts for richer context
-        priors_anchors = drift_data.get("pattern_anchors", [])
-        priors_texts = drift_data.get("priors_texts", [])
+        priors_anchors = (drift_data or {}).get("pattern_anchors", [])
+        priors_texts = (drift_data or {}).get("priors_texts", [])
         priors_unique = priors_anchors + [{"text": t} for t in priors_texts]
 
-        # Layer 1: Check for insufficient grounding (system-meta-only substrate)
-        verdict = self._check_grounding(faiss_unique, ruvector_unique)
+        # Validation layers: memory-enriched checks require drift_data.
+        # Without drift_data, only deterministic pattern checks run.
+        # This separates "injection eligibility" (needs drift) from
+        # "governance validation" (always runs what it can).
+        if drift_data:
+            # Layer 1: Check for insufficient grounding (system-meta-only substrate)
+            verdict = self._check_grounding(faiss_unique, ruvector_unique)
 
-        # Layer 1.5: LINEAGE validation — check milestone coherence when milestones matched
-        if verdict is None:
-            verdict = self._check_lineage(priors_anchors, response)
+            # Layer 1.5: LINEAGE validation — check milestone coherence when milestones matched
+            if verdict is None:
+                verdict = self._check_lineage(priors_anchors, response)
 
-        # Layer 2: Deterministic pre-check for smoothing (saves utility tokens)
-        if verdict is None and drift > SMOOTHING_DRIFT_FLOOR:
+            # Layer 2: Deterministic pre-check for smoothing (saves utility tokens)
+            if verdict is None and drift > SMOOTHING_DRIFT_FLOOR:
+                verdict = self._check_smoothing(response)
+
+            # Layer 3: Utility model check (integration quality + prior divergence)
+            if verdict is None:
+                verdict = await self._utility_check(
+                    response, faiss_unique, ruvector_unique, drift,
+                    priors_unique=priors_unique,
+                )
+        else:
+            # No drift data — run deterministic checks only.
+            # Smoothing regex catches obvious governance violations without memory context.
             verdict = self._check_smoothing(response)
-
-        # Layer 3: Utility model check (integration quality + prior divergence)
-        if verdict is None:
-            verdict = await self._utility_check(
-                response, faiss_unique, ruvector_unique, drift,
-                priors_unique=priors_unique,
-            )
 
         # Log structured snapshot on every activation (pass or fail)
         log_heading = f"Ecotone Integrity: {'PASS' if verdict['pass'] else 'FAIL'} (tension={drift:.2f})"
@@ -279,12 +288,12 @@ class EcotoneIntegrity(Extension):
         # This ensures _65_epitaph_extraction.py at monologue_end can always find
         # the failure even if the gate passes on retry.
         ecotone_failures = self.agent.context.get_data("_ecotone_failures") or []
-        trace_id = drift_data.get("trace_id") or self.agent.context.get_data("_current_trace_id")
+        trace_id = (drift_data or {}).get("trace_id") or self.agent.context.get_data("_current_trace_id")
         ecotone_failures.append({
             "failure_code": verdict.get("failure_code", "UNKNOWN"),
             "evidence": verdict.get("evidence", "")[:500],
             "drift_score": drift,
-            "pattern_anchors": drift_data.get("pattern_anchors", []),
+            "pattern_anchors": (drift_data or {}).get("pattern_anchors", []),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "trace_id": trace_id,
         })
@@ -321,13 +330,13 @@ class EcotoneIntegrity(Extension):
             f"Example RuVector-unique item: '{example_ruvector}'"
         )
 
-        pattern_anchors = drift_data.get("pattern_anchors", [])
+        pattern_anchors = (drift_data or {}).get("pattern_anchors", [])
         if pattern_anchors:
             anchor_terms = [a["term"] for a in pattern_anchors[:5]]
             feedback += f"\nPattern resonance detected: {', '.join(anchor_terms)}. Consider how these civilization patterns relate to your response."
 
         # D→B regulated signature consumption: enrich retry feedback with regulation state
-        regulated_sigs = drift_data.get("regulated_signatures", [])
+        regulated_sigs = (drift_data or {}).get("regulated_signatures", [])
         active_regs = [
             s for s in regulated_sigs
             if isinstance(s, dict) and s.get("regulation_state") in ("sensitized", "saturated")
@@ -592,7 +601,7 @@ class EcotoneIntegrity(Extension):
             pattern_anchor_count = len(drift_data.get("pattern_anchors", []))
 
             # D→B regulated signature consumption: include regulation state in epitaph
-            regulated_sigs = drift_data.get("regulated_signatures", [])
+            regulated_sigs = (drift_data or {}).get("regulated_signatures", [])
             reg_summary = [
                 {
                     "archetype": s["archetype"],

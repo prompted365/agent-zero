@@ -100,7 +100,7 @@ class RuVectorQuery(Tool):
 
     async def _list_collections(self, **kwargs):
         result = self._get("/collections")
-        collections = result.get("collections", [])
+        collections = result if isinstance(result, list) else result.get("collections", [])
         if not collections:
             return Response(message="No collections found.", break_loop=False)
         text = "Collections:\n" + "\n".join(f"- {c.get('name', '?')} (dim={c.get('dimension', '?')}, docs={c.get('document_count', '?')})" for c in collections)

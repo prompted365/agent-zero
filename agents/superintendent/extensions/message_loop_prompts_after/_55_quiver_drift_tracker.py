@@ -406,12 +406,7 @@ class AnchorTensionTracker(Extension):
             _TEETH_ARCHETYPES = {
                 "cautionary_fall", "greed_backfire", "cunning_triumph", "empire_cycle",
             }
-            snap_amplitudes = {
-                a: float(surveillance_result.amplitudes[i])
-                for i, a in enumerate(
-                    _surv._archetypes if _surv else []
-                )
-            } if hasattr(surveillance_result, "amplitudes") else {}
+            snap_amplitudes = dict(surveillance_result.amplitudes) if hasattr(surveillance_result, "amplitudes") else {}
 
             snap_teeth = {
                 k: v for k, v in snap_amplitudes.items()
