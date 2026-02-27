@@ -27,6 +27,7 @@ _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs, _ruvector_post, COLLECTION
+import glob as _glob
 
 # failure_code → context_shape (deterministic mapping)
 FAILURE_SHAPE_MAP = {
@@ -124,6 +125,9 @@ class EpitaphExtraction(Extension):
                 content=err,
             )
 
+        # Clear processed failures from AgentContext.data
+        self.agent.context.set_data("_ecotone_failures", None)
+
         # Volume snapshot: lightweight epitaph pool health signal
         self._emit_volume_snapshot(db)
 
@@ -187,15 +191,49 @@ class EpitaphExtraction(Extension):
         except Exception:
             pass  # volume snapshot is purely observational — never crash
 
+    def _get_birth_conformation(self) -> dict | None:
+        """Load most recent conformation snapshot for epitaph birth fingerprint.
+
+        Reads the latest tic-N.json from audit-logs/conformations/.
+        Returns the raw conformation dict, or None if unavailable.
+        """
+        try:
+            conf_dir = os.environ.get(
+                "CONFORMATION_DIR",
+                "/workspace/operationTorque/audit-logs/conformations",
+            )
+            if not os.path.isdir(conf_dir):
+                return None
+            files = sorted(_glob.glob(os.path.join(conf_dir, "tic-*.json")))
+            if not files:
+                return None
+            with open(files[-1]) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
     def _collect_ecotone_failures(self, loop_data: LoopData) -> list[dict]:
         """
         Collect ecotone failures from this monologue.
-        Primary: ecotone_feedback in extras_persistent (present when gate failed).
-        Secondary: recent entries in today's JSONL (last 5 min).
+        Primary: _ecotone_failures in AgentContext.data (set by gate on failure,
+                 survives ecotone_feedback pop on gate pass).
+        Secondary: ecotone_feedback in extras_persistent (present when gate failed
+                   and never passed on retry — kept for backward compat).
+        Tertiary: recent entries in today's JSONL (last 15 min).
         """
         failures = []
 
-        # Primary source: extras_persistent feedback
+        # Primary source: AgentContext.data (reliable — survives feedback pop)
+        stored_failures = self.agent.context.get_data("_ecotone_failures") or []
+        for sf in stored_failures:
+            failures.append({
+                "failure_code": sf.get("failure_code", "UNKNOWN"),
+                "evidence": sf.get("evidence", ""),
+                "drift_score": sf.get("drift_score", 0.0),
+                "pattern_anchors": sf.get("pattern_anchors", []),
+            })
+
+        # Secondary source: extras_persistent feedback (backward compat)
         feedback = loop_data.extras_persistent.get("ecotone_feedback")
         if feedback:
             # Parse failure_code from the feedback string
@@ -204,15 +242,18 @@ class EpitaphExtraction(Extension):
             if code_match:
                 failure_code = code_match.group(1)
 
-            drift_data = self.agent.context.get_data("quiver_drift_data") or {}
-            failures.append({
-                "failure_code": failure_code,
-                "evidence": feedback,
-                "drift_score": drift_data.get("drift", 0.0),
-                "pattern_anchors": drift_data.get("pattern_anchors", []),
-            })
+            # Avoid duplicates with primary source
+            already = any(f["failure_code"] == failure_code for f in failures)
+            if not already:
+                drift_data = self.agent.context.get_data("quiver_drift_data") or {}
+                failures.append({
+                    "failure_code": failure_code,
+                    "evidence": feedback,
+                    "drift_score": drift_data.get("drift", 0.0),
+                    "pattern_anchors": drift_data.get("pattern_anchors", []),
+                })
 
-        # Secondary: check today's JSONL for recent entries not already captured
+        # Tertiary: check today's JSONL for recent entries not already captured
         try:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             log_path = os.path.join(AUDIT_LOG_DIR, f"{today}.jsonl")
@@ -228,11 +269,12 @@ class EpitaphExtraction(Extension):
                         except json.JSONDecodeError:
                             continue
 
-                        # Only recent entries (last 5 min)
+                        # Only recent entries (last 15 min — extended from 5 min
+                        # to cover monologues that run longer than the failure window)
                         ts = entry.get("timestamp", "")
                         try:
                             entry_time = datetime.fromisoformat(ts)
-                            if (now - entry_time).total_seconds() > 300:
+                            if (now - entry_time).total_seconds() > 900:
                                 continue
                         except (ValueError, TypeError):
                             continue
@@ -317,15 +359,34 @@ class EpitaphExtraction(Extension):
         corrective_disposition = parsed.get("corrective_disposition", "")
         trigger_signature = parsed.get("trigger_signature", "unknown_trigger")
 
-        # Generate embedding from invariant text
+        # Generate embedding — local first (DIP-384 sovereignty), external fallback
         inv_text = f"{context_shape}: {collapse_mode} under {trigger_signature}"
-        embedding = list(db.db.embedding_function.embed_query(inv_text))
+        embedding = None
+
+        # Try local embedder first (12-16ms, no external dependency)
+        try:
+            from _helpers.local_embedder import embed_text
+            embedding = embed_text(inv_text)
+        except Exception:
+            pass
+
+        # Fall back to existing embedder (OpenRouter via FAISS wrapper)
+        if embedding is None:
+            try:
+                embedding = list(db.db.embedding_function.embed_query(inv_text))
+            except Exception:
+                pass  # embedding remains None — WAL will still mint
 
         # Build source_event identifier
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         now_ts = datetime.now(timezone.utc).strftime("%H%M%S")
         source_event = f"ecotone_{today}_{now_ts}"
 
+        # Build birth conformation from most recent conformation snapshot
+        birth_conf = self._get_birth_conformation()
+
+        # create_epitaph now mints to WAL first, then RuVector best-effort.
+        # Returns doc_id regardless of embedding/RuVector success.
         return create_epitaph(
             embedding=embedding,
             context_shape=context_shape,
@@ -337,4 +398,5 @@ class EpitaphExtraction(Extension):
             failure_code=failure_code,
             source="ecotone",
             source_event=source_event,
+            birth_conformation=birth_conf,
         )

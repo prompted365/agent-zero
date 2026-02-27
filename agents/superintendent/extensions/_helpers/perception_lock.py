@@ -8,6 +8,11 @@ invariant description used only for embedding search. Prose is never stored,
 never retrieved — it is generated fresh each time by the Ghost Chorus from
 structural invariants.
 
+DIP-384 (2026-02-27): Epitaph creation is a governance event. Embedding is
+indexing for retrieval. Embedding failure NEVER prevents epitaph persistence.
+All mints go to the durable WAL store first, then RuVector best-effort.
+Silent failures replaced with Siren signal emission.
+
 Used by:
   - _65_epitaph_extraction.py (ecotone failures → invariant objects)
   - _45_ghost_chorus.py (retrieve invariant fields for synthesis)
@@ -44,6 +49,55 @@ _JOURNAL_STATE_PATH = os.environ.get(
     "EPITAPH_JOURNAL_STATE",
     "/a0/usr/epitaph_journal_sync_state.json",
 )
+
+# Plane registry path (DIP-384)
+_PLANE_REGISTRY_PATHS = [
+    "/workspace/operationTorque/config/embedding_planes.json",
+    os.path.join(os.path.dirname(__file__), "../../../../config/embedding_planes.json"),
+]
+
+
+def _get_active_plane_id() -> str:
+    """Read the active plane ID from the plane registry."""
+    try:
+        for path in _PLANE_REGISTRY_PATHS:
+            if os.path.isfile(path):
+                with open(path) as f:
+                    reg = json.load(f)
+                return reg.get("active_plane", "unknown")
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _emit_epitaph_signal(
+    event_tag: str,
+    kind: str,
+    band: str,
+    signature: str,
+    summary: str,
+    volume: int = 40,
+    checks: list[str] | None = None,
+    trace_id: str | None = None,
+):
+    """Emit a Siren signal for epitaph persistence events."""
+    try:
+        from _helpers.signal_emitter import emit_signal, make_dedup_signal_id
+        sig_id = make_dedup_signal_id("epitaph_persistence", event_tag)
+        emit_signal(
+            signal_id=sig_id,
+            kind=kind,
+            band=band,
+            subsystem="epitaph_persistence",
+            source="perception_lock.py:create_epitaph",
+            signature=signature,
+            volume=volume,
+            summary=summary,
+            suggested_checks=checks or [],
+            trace_id=trace_id,
+        )
+    except Exception:
+        pass
 
 
 def _ruvector_post(endpoint: str, payload: dict, timeout: int = 10) -> dict:
@@ -121,8 +175,80 @@ def get_epitaph_pool_depth(
         return 0
 
 
+def _compute_conformation_fingerprint(birth_conformation: dict | None) -> dict:
+    """Compute a lightweight conformation fingerprint for shape-proximity methylation.
+
+    The fingerprint captures the folded shape of the system at failure time.
+    During retrieval, the current system shape is compared against this
+    fingerprint — when the shapes diverge, the epitaph gets methylated.
+
+    Shape dimensions:
+      - active_signal_bands: which frequency bands have active signals
+      - total_signal_volume: aggregate pressure on the system
+      - subsystems_active: which subsystems are signaling
+      - drift_band: the tension level at failure
+      - context_shape: categorical shape label
+    """
+    if not birth_conformation:
+        return {}
+
+    signals = birth_conformation.get("active_signals", [])
+    bands_active = sorted(set(s.get("band", "") for s in signals))
+    subsystems = sorted(set(s.get("subsystem", "") for s in signals))
+    total_vol = sum(s.get("volume", 0) for s in signals)
+
+    return {
+        "signal_count": len(signals),
+        "bands_active": bands_active,
+        "subsystems_active": subsystems,
+        "total_volume": total_vol,
+        "warrant_count": len(birth_conformation.get("active_warrants", [])),
+        "cogpr_count": len(birth_conformation.get("pending_cogprs", [])),
+    }
+
+
+def conformation_distance(fp_a: dict, fp_b: dict) -> float:
+    """Compute distance between two conformation fingerprints.
+
+    Returns 0.0 (identical shape) to 1.0 (completely different shape).
+    Uses Jaccard distance on categorical sets + normalized scalar differences.
+    """
+    if not fp_a or not fp_b:
+        return 0.5  # Unknown shape → neutral distance
+
+    # Jaccard distance on band sets
+    bands_a = set(fp_a.get("bands_active", []))
+    bands_b = set(fp_b.get("bands_active", []))
+    if bands_a or bands_b:
+        band_jaccard = 1.0 - len(bands_a & bands_b) / max(len(bands_a | bands_b), 1)
+    else:
+        band_jaccard = 0.0
+
+    # Jaccard distance on subsystem sets
+    subs_a = set(fp_a.get("subsystems_active", []))
+    subs_b = set(fp_b.get("subsystems_active", []))
+    if subs_a or subs_b:
+        sub_jaccard = 1.0 - len(subs_a & subs_b) / max(len(subs_a | subs_b), 1)
+    else:
+        sub_jaccard = 0.0
+
+    # Normalized scalar differences
+    vol_a = fp_a.get("total_volume", 0)
+    vol_b = fp_b.get("total_volume", 0)
+    max_vol = max(vol_a, vol_b, 1)
+    vol_diff = abs(vol_a - vol_b) / max_vol
+
+    sig_a = fp_a.get("signal_count", 0)
+    sig_b = fp_b.get("signal_count", 0)
+    max_sig = max(sig_a, sig_b, 1)
+    sig_diff = abs(sig_a - sig_b) / max_sig
+
+    # Weighted combination
+    return min(1.0, band_jaccard * 0.3 + sub_jaccard * 0.3 + vol_diff * 0.2 + sig_diff * 0.2)
+
+
 def create_epitaph(
-    embedding: list[float],
+    embedding: list[float] | None,
     context_shape: str,
     collapse_mode: str,
     corrective_disposition: str,
@@ -132,25 +258,126 @@ def create_epitaph(
     failure_code: str,
     source: str,
     source_event: str,
+    birth_conformation: dict | None = None,
+    event_surface: str = "ecotone_gate",
+    cause_chain: list | None = None,
 ) -> str | None:
     """
-    Create or deduplicate an epitaph in RuVector.
+    Create or deduplicate an epitaph.
 
-    Returns the epitaph document ID, or None on failure.
-    Deduplication uses sha256(failure_code|context_shape|collapse_mode)[:16] —
-    NO free text in the hash (free text creates near-duplicates forever).
+    DIP-384 flow (2026-02-27):
+    1. Mint to WAL store FIRST (always succeeds — governance event)
+    2. Enqueue for embedding backfill
+    3. If embedding provided, try immediate RuVector write (best-effort)
+    4. Returns doc_id regardless of RuVector success
+
+    Embedding is now optional (None). When None, the epitaph is minted
+    to the WAL store and queued for backfill. RuVector write is skipped.
+
+    Deduplication uses sha256(failure_code|context_shape|collapse_mode)[:16].
     """
     context_shape = _validate_context_shape(context_shape)
+    birth_fp = _compute_conformation_fingerprint(birth_conformation)
 
-    # Dimension guard: refuse to persist epitaph with wrong embedding dimension
+    dedupe_hash = hashlib.sha256(
+        f"{failure_code}|{context_shape}|{collapse_mode}".encode()
+    ).hexdigest()[:16]
+
+    doc_id = f"epitaph:{failure_code.lower()}:{dedupe_hash}"
+    now = datetime.now(timezone.utc).isoformat()
+    plane_id = _get_active_plane_id()
+
+    # ── Step 1: Mint to WAL store FIRST (privileged, bypasses physics gate) ──
+    try:
+        from _helpers.epitaph_store import (
+            mint_epitaph,
+            enqueue_embedding,
+            record_ack,
+            get_epitaph_by_dedupe,
+        )
+
+        # Check WAL-level dedup
+        existing = get_epitaph_by_dedupe(dedupe_hash)
+        if existing:
+            # Already minted — still try RuVector dedup/boost below
+            pass
+        else:
+            mint_epitaph(
+                epitaph_id=doc_id,
+                trigger_kind=source,
+                context_shape=context_shape,
+                collapse_mode=collapse_mode,
+                corrective_disposition=corrective_disposition,
+                trigger_signature=trigger_signature,
+                drift_band=drift_band,
+                weight=weight,
+                failure_code=failure_code,
+                source=source,
+                source_event=source_event,
+                event_surface=event_surface,
+                cause_chain=cause_chain,
+                plane_id=plane_id,
+                dedupe_hash=dedupe_hash,
+                birth_conformation=birth_fp,
+            )
+
+        # Enqueue for embedding backfill
+        enqueue_embedding(doc_id, plane_id, "ruvector")
+    except Exception as e:
+        # WAL mint failed — PRIMITIVE severity (should never happen)
+        print(f"[perception_lock] WAL MINT FAILED: {e}")
+        _emit_epitaph_signal(
+            event_tag="wal_mint_failure",
+            kind="BEACON",
+            band="PRIMITIVE",
+            signature="epitaph_wal_mint_failure",
+            summary=f"Epitaph WAL mint failed: {str(e)[:200]}. "
+            "Check disk space and SQLite WAL health.",
+            volume=70,
+            checks=["Check disk space", "Check epitaph_store.sqlite WAL health"],
+        )
+
+    # ── Step 2: If no embedding, return (WAL minted, backfill will handle) ──
+    if embedding is None:
+        try:
+            from _helpers.chorus_telemetry import log_chorus_event
+            log_chorus_event("epitaph_created", {
+                "epitaph_id": doc_id,
+                "context_shape": context_shape,
+                "failure_code": failure_code,
+                "source": source,
+                "weight": weight,
+                "wal_only": True,
+            })
+        except Exception:
+            pass
+        return doc_id
+
+    # ── Step 3: Dimension guard (emit signal instead of silent None) ──
     try:
         col_info = _ruvector_get(f"/collections/{COLLECTION}")
         col_dim = col_info.get("dimension", 0)
         if col_dim > 0 and len(embedding) != col_dim:
             print(
-                f"[perception_lock] DIMENSION MISMATCH: epitaph embedding={len(embedding)}d, "
-                f"collection expects={col_dim}d. Epitaph NOT persisted. "
-                f"Align FAISS embedder dimension to match RuVector collection."
+                f"[perception_lock] DIMENSION MISMATCH: epitaph embedding="
+                f"{len(embedding)}d, collection expects={col_dim}d. "
+                f"WAL minted, backfill will re-embed at correct dimension."
+            )
+            _emit_epitaph_signal(
+                event_tag=f"dim_mismatch_{len(embedding)}_{col_dim}",
+                kind="BEACON",
+                band="PRIMITIVE",
+                signature="embedding_plane_drift",
+                summary=(
+                    f"Dimension mismatch: embedding={len(embedding)}d, "
+                    f"collection expects={col_dim}d. Failure: {failure_code}. "
+                    f"WAL minted, backfill will re-embed."
+                ),
+                volume=60,
+                checks=[
+                    "Check active plane in config/embedding_planes.json",
+                    "Run embed-backfill.py to re-index at correct dimension",
+                ],
             )
             try:
                 from _helpers.chorus_telemetry import log_chorus_event
@@ -159,18 +386,15 @@ def create_epitaph(
                     "collection_dim": col_dim,
                     "failure_code": failure_code,
                     "context_shape": context_shape,
+                    "wal_minted": True,
                 })
             except Exception:
                 pass
-            return None
+            return doc_id  # WAL minted, embedding queued for backfill
     except Exception:
-        pass  # Fail-open if can't check — let upsert attempt naturally
+        pass  # RuVector unreachable — fall through to write attempt
 
-    dedupe_hash = hashlib.sha256(
-        f"{failure_code}|{context_shape}|{collapse_mode}".encode()
-    ).hexdigest()[:16]
-
-    # Search for existing epitaph with same dedupe_hash
+    # ── Step 4: RuVector dedup check ──
     try:
         search_result = _ruvector_post("/search", {
             "embedding": embedding,
@@ -180,19 +404,15 @@ def create_epitaph(
         for r in search_result.get("results", []):
             meta = r.get("metadata") or {}
             if meta.get("type") == "epitaph" and meta.get("dedupe_hash") == dedupe_hash:
-                # Duplicate found — boost instead of creating
                 existing_id = r.get("id")
                 if existing_id:
                     boost_epitaph(str(existing_id))
                     return str(existing_id)
     except (urllib.error.URLError, Exception):
-        pass  # Search failed — proceed with creation (may create duplicate, acceptable)
+        pass  # Search failed — proceed with creation
 
-    # Build text field: brief invariant summary for embedding, NOT prose
+    # ── Step 5: RuVector write (best-effort) ──
     text = f"{context_shape}: {collapse_mode} under {trigger_signature}"
-    now = datetime.now(timezone.utc).isoformat()
-    doc_id = f"epitaph:{failure_code.lower()}:{dedupe_hash}"
-
     payload = {
         "id": doc_id,
         "text": text,
@@ -210,11 +430,14 @@ def create_epitaph(
             "weight": weight,
             "uses_count": 0,
             "effective_weight": weight,
+            "methylation_score": 0.0,
+            "birth_conformation": birth_fp,
             "recurrence_count": 1,
             "dedupe_hash": dedupe_hash,
             "source": source,
             "source_event": source_event,
             "failure_code": failure_code,
+            "plane_id": plane_id,
             "created_at": now,
             "last_seen": now,
         },
@@ -222,7 +445,12 @@ def create_epitaph(
 
     try:
         _ruvector_post("/documents", payload)
-        # Telemetry: epitaph_created
+        # Record ACK in WAL store
+        try:
+            record_ack(doc_id, "ruvector", plane_id, doc_id)
+        except Exception:
+            pass
+        # Telemetry
         try:
             from _helpers.chorus_telemetry import log_chorus_event
             log_chorus_event("epitaph_created", {
@@ -231,12 +459,29 @@ def create_epitaph(
                 "failure_code": failure_code,
                 "source": source,
                 "weight": weight,
+                "ruvector_acked": True,
             })
         except Exception:
             pass
         return doc_id
-    except (urllib.error.URLError, Exception):
-        return None
+    except (urllib.error.URLError, Exception) as e:
+        # RuVector write failed — WAL minted, backfill will retry
+        _emit_epitaph_signal(
+            event_tag="ruvector_write_failure",
+            kind="TENSION",
+            band="COGNITIVE",
+            signature="ruvector_epitaph_write_failure",
+            summary=(
+                f"RuVector write failed for {doc_id}: {str(e)[:200]}. "
+                f"Epitaph WAL minted, backfill will retry."
+            ),
+            volume=40,
+            checks=[
+                "Check RuVector container health",
+                "Run embed-backfill.py to retry indexing",
+            ],
+        )
+        return doc_id  # WAL minted — return ID regardless
 
 
 def retrieve_coaching_epitaphs(
@@ -244,13 +489,21 @@ def retrieve_coaching_epitaphs(
     context_shape: str | None = None,
     top_k: int = 5,
     min_weight: float = 0.1,
+    current_conformation: dict | None = None,
 ) -> list[dict]:
     """
     Retrieve epitaph invariant fields for chorus synthesis.
 
     Returns list of dicts with ALL metadata fields (collapse_mode,
     corrective_disposition, trigger_signature, drift_band, recurrence_count).
-    Sorted by shape_match_bonus * 0.2 + effective_weight * score.
+
+    Ranking: shape_match_bonus * 0.2 + effective_weight * score * expression_factor.
+
+    Shape-proximity methylation: when `current_conformation` is provided,
+    each epitaph's birth conformation is compared against the current shape.
+    Epitaphs born under a similar conformation are expressed; those born
+    under a distant conformation are silenced. This is the ASO targeting
+    mechanism — epitaphs bind to complementary system shapes.
     """
     try:
         search_result = _ruvector_post("/search", {
@@ -260,6 +513,9 @@ def retrieve_coaching_epitaphs(
         })
     except (urllib.error.URLError, Exception):
         return []
+
+    # Hoist conformation fingerprint computation outside the loop — once per retrieval
+    current_fp = _compute_conformation_fingerprint(current_conformation) if current_conformation else {}
 
     candidates = []
     for r in search_result.get("results", []):
@@ -272,7 +528,28 @@ def retrieve_coaching_epitaphs(
 
         score = r.get("score", 0.0)
         shape_bonus = 1.0 if (context_shape and meta.get("context_shape") == context_shape) else 0.0
-        rank_score = shape_bonus * 0.2 + eff_weight * score
+
+        # Static methylation: accumulated from use/decay lifecycle
+        static_methylation = meta.get("methylation_score", 0.0)
+
+        # Dynamic methylation: shape-proximity targeting (ASO-like).
+        # Compare the epitaph's birth conformation against the current system shape.
+        # When shapes are similar (distance ≈ 0), dynamic methylation ≈ 0 (expressed).
+        # When shapes diverge (distance → 1), dynamic methylation → 0.7 (silenced,
+        # but never fully — distant conformations may still carry partial relevance).
+        birth_fp = meta.get("birth_conformation", {})
+        if current_fp and birth_fp:
+            shape_dist = conformation_distance(birth_fp, current_fp)
+            dynamic_methylation = shape_dist * 0.7  # cap at 0.7
+        else:
+            dynamic_methylation = 0.0  # no conformation data → fully expressed
+
+        # Combined methylation: max of static and dynamic
+        # Static captures "lesson has landed" (use-based).
+        # Dynamic captures "wrong context for this lesson" (shape-based).
+        methylation = max(static_methylation, dynamic_methylation)
+        expression_factor = max(0.0, 1.0 - methylation)
+        rank_score = (shape_bonus * 0.2 + eff_weight * score) * expression_factor
 
         # Temporal fields — logged for telemetry, NOT applied to scoring
         created = meta.get("created_at", "")
@@ -301,6 +578,14 @@ def retrieve_coaching_epitaphs(
             "uses_count": meta.get("uses_count", 0),
             "failure_code": meta.get("failure_code", ""),
             "source": meta.get("source", ""),
+            "methylation_score": round(methylation, 4),
+            "static_methylation": round(static_methylation, 4),
+            "dynamic_methylation": round(dynamic_methylation, 4),
+            "expression_factor": round(expression_factor, 4),
+            "birth_fp_present": bool(birth_fp),
+            "current_fp_present": bool(current_fp),
+            "dynamic_methylation_applied": bool(current_fp and birth_fp),
+            "birth_conformation": birth_fp if birth_fp else None,
             "age_days": round(age_days, 1),
             "hypothetical_age_weight": round(hypo_age_weight, 4),
             "last_seen": meta.get("last_seen", ""),
@@ -345,8 +630,16 @@ def decay_epitaph(doc_id: str) -> bool:
     weight = meta.get("weight", 0.5)
     new_eff = weight * (0.95 ** uses)
 
+    # Methylation: each successful use methylates the epitaph slightly.
+    # The lesson is landing → gradually silence it so newer failures get priority.
+    # methylation_score: 0.0 = fully expressed, 1.0 = fully silenced.
+    # Increment: 0.05 per use, capped at 0.8 (never fully silenced by use alone).
+    old_methyl = meta.get("methylation_score", 0.0)
+    new_methyl = min(0.8, old_methyl + 0.05)
+
     meta["uses_count"] = uses
     meta["effective_weight"] = round(new_eff, 6)
+    meta["methylation_score"] = round(new_methyl, 4)
 
     # Upsert back — refuse to zero the embedding
     embedding = doc.get("embedding")
@@ -409,6 +702,11 @@ def boost_epitaph(doc_id: str, boost: float = 0.05) -> bool:
     meta["effective_weight"] = round(weight, 4)
     meta["recurrence_count"] = recurrence
     meta["last_seen"] = datetime.now(timezone.utc).isoformat()
+
+    # Demethylate on recurrence: the same failure recurred → the lesson
+    # hasn't landed. Halve the methylation score to re-express the epitaph.
+    old_methyl = meta.get("methylation_score", 0.0)
+    meta["methylation_score"] = round(old_methyl * 0.5, 4)
 
     # Refuse to zero the embedding
     embedding = doc.get("embedding")
@@ -555,24 +853,37 @@ def sync_journal_epitaphs(
         if not trigger_signature:
             trigger_signature = "journal_entry"
 
-        # Generate embedding — skip entry if no embedding source available
+        # Generate embedding — local first (DIP-384 sovereignty), then fallback
         text = f"{context_shape}: {collapse_mode} under {trigger_signature}"
         embedding = None
+
+        # Priority 1: caller-provided embed_fn (testing)
         if embed_fn:
             embedding = embed_fn(text)
-        elif agent:
+
+        # Priority 2: local Ollama embedder (sovereignty)
+        if embedding is None:
+            try:
+                from _helpers.local_embedder import embed_text
+                embedding = embed_text(text)
+            except Exception:
+                pass
+
+        # Priority 3: external embedder via agent (fallback)
+        if embedding is None and agent:
             try:
                 from python.helpers.memory import Memory
                 import asyncio
                 db = asyncio.get_event_loop().run_until_complete(Memory.get(agent))
                 embedding = list(db.db.embedding_function.embed_query(text))
             except Exception:
-                pass  # No zero-vector fallback — skip entry below
+                pass
 
-        if embedding is None or (embedding and all(v == 0.0 for v in embedding[:10])):
-            continue  # Refuse to create epitaph with missing/zero embedding
+        # DIP-384: embedding=None is OK — WAL will still mint, backfill later
+        if embedding and all(v == 0.0 for v in embedding[:10]):
+            embedding = None  # Zero vectors are useless, treat as missing
 
-        # Create epitaph
+        # Create epitaph (mints to WAL first, then RuVector best-effort)
         source_event = f"journal_{os.path.basename(journal_epitaph_path)}_{i}"
         result = create_epitaph(
             embedding=embedding,
