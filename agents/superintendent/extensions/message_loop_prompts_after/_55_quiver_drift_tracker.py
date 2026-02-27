@@ -38,11 +38,25 @@ except Exception:
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
 PRIORS_COLLECTION = os.environ.get("RUVECTOR_PRIORS_COLLECTION", "civilization_priors")
-DRIFT_THRESHOLD = float(os.environ.get("QUIVER_DRIFT_THRESHOLD", "0.60"))
+# Split thresholds: INJECT (structural context into prompt, costs tokens) vs
+# ESCALATE (drift_data to ecotone gate for enriched governance, no token cost).
+# INJECT is the higher bar — only fire when genuinely novel.
+# ESCALATE is lower — enrich governance validation at moderate novelty.
+DRIFT_INJECT_THRESHOLD = float(os.environ.get("QUIVER_DRIFT_INJECT_THRESHOLD",
+                                os.environ.get("QUIVER_DRIFT_THRESHOLD", "0.60")))
+DRIFT_ESCALATE_THRESHOLD = float(os.environ.get("QUIVER_DRIFT_ESCALATE_THRESHOLD", "0.35"))
 DRIFT_CHECK_INTERVAL = int(os.environ.get("QUIVER_DRIFT_INTERVAL", "1"))
 MIN_DRIFT_INTERVAL_SECONDS = float(os.environ.get("QUIVER_DRIFT_MIN_INTERVAL", "30.0"))
 TOP_K = 5
-CACHE_COSINE_THRESHOLD = 0.15
+# Cache cosine threshold: tightened for 384D plane (was 0.15 @ 4096D).
+# Lower-dim embeddings produce tighter cosine distances; 0.15 caused excessive cache hits.
+CACHE_COSINE_THRESHOLD = float(os.environ.get("QUIVER_CACHE_COSINE_THRESHOLD", "0.06"))
+
+# Distribution-relative calibration: rolling window of recent topic_novelty values.
+# When warm (>= _MIN_OBSERVATIONS), z-score gates replace static thresholds.
+_NOVELTY_WINDOW_SIZE = 20
+_MIN_OBSERVATIONS = 5
+_novelty_window: list[float] = []
 
 # Module-level cache — NOT in extras_persistent (avoids 92k char context bloat)
 # Survives across loop iterations within the same monologue (same process).
@@ -50,8 +64,28 @@ _drift_cache: dict | None = None
 _last_drift_time: float = 0.0  # Time-based debounce across monologues
 
 
+def _exceeds_relative(value: float, static_threshold: float, z_threshold: float = 1.5) -> bool:
+    """Distribution-relative threshold check.
+
+    When rolling window has enough observations, uses z-score:
+    exceeds if z > z_threshold AND absolute value > static_threshold * 0.5 (floor).
+    Falls back to static threshold when window is cold or variance is near-zero.
+    """
+    if len(_novelty_window) < _MIN_OBSERVATIONS:
+        return value >= static_threshold
+
+    mean = sum(_novelty_window) / len(_novelty_window)
+    std = (sum((x - mean) ** 2 for x in _novelty_window) / len(_novelty_window)) ** 0.5
+
+    if std < 0.01:
+        return value >= static_threshold
+
+    z = (value - mean) / std
+    return z > z_threshold and value >= static_threshold * 0.5
+
+
 class AnchorTensionTracker(Extension):
-    __version__ = "2.3.0"
+    __version__ = "2.4.0"
     __requires_a0__ = ">=0.8"
     __schema__ = "AgentContext.data[quiver_drift_data]; LoopData.extras_persistent[quiver_drift]"
 
@@ -77,7 +111,7 @@ class AnchorTensionTracker(Extension):
         if now - _last_drift_time < MIN_DRIFT_INTERVAL_SECONDS and _drift_cache is not None:
             # Re-expose cached data for ecotone gate if available
             if drift_data := (_drift_cache or {}).get("drift_data"):
-                if drift_data.get("topic_novelty", 0) >= DRIFT_THRESHOLD:
+                if drift_data.get("topic_novelty", 0) >= DRIFT_ESCALATE_THRESHOLD:
                     self.agent.context.set_data("quiver_drift_data", drift_data)
             return
         _last_drift_time = now
@@ -392,7 +426,32 @@ class AnchorTensionTracker(Extension):
             self.agent.context.set_data("lock_candidate", lock_info)
             drift_data["lock_candidate"] = lock_info
 
-        if topic_novelty >= DRIFT_THRESHOLD:
+        # Update rolling novelty window BEFORE threshold checks
+        global _novelty_window
+        _novelty_window.append(topic_novelty)
+        if len(_novelty_window) > _NOVELTY_WINDOW_SIZE:
+            _novelty_window = _novelty_window[-_NOVELTY_WINDOW_SIZE:]
+
+        # Calibration telemetry: record threshold decisions for observability
+        window_len = len(_novelty_window)
+        if window_len >= _MIN_OBSERVATIONS:
+            w_mean = sum(_novelty_window) / window_len
+            w_std = (sum((x - w_mean) ** 2 for x in _novelty_window) / window_len) ** 0.5
+            drift_data["calibration"] = {
+                "mode": "z-score",
+                "window_size": window_len,
+                "window_mean": round(w_mean, 4),
+                "window_std": round(w_std, 4),
+                "z_score": round((topic_novelty - w_mean) / w_std, 2) if w_std > 0.01 else 0.0,
+            }
+        else:
+            drift_data["calibration"] = {"mode": "static", "window_size": window_len}
+
+        # ESCALATE gate: expose drift_data to ecotone for enriched governance validation.
+        # Lower bar (z > 0.5σ) — governance enrichment should fire on moderate novelty.
+        escalate = _exceeds_relative(topic_novelty, DRIFT_ESCALATE_THRESHOLD, z_threshold=0.5)
+        drift_data["calibration"]["escalate"] = escalate
+        if escalate:
             self.agent.context.set_data("quiver_drift_data", drift_data)
         else:
             self.agent.context.set_data("quiver_drift_data", None)
@@ -466,7 +525,11 @@ class AnchorTensionTracker(Extension):
         # Build compact injection blocks — every char here costs tokens
         injection_parts = []
 
-        if topic_novelty >= DRIFT_THRESHOLD and ruvector_texts:
+        # INJECT gate: structural context into prompt (costs tokens).
+        # Higher bar (z > 1.5σ) — only inject when genuinely novel.
+        inject = _exceeds_relative(topic_novelty, DRIFT_INJECT_THRESHOLD, z_threshold=1.5)
+        drift_data["calibration"]["inject"] = inject
+        if inject and ruvector_texts:
             # Compact structural context — 80-char snippets, top 3 only
             structural_items = ruvector_neighbors[:3] if ruvector_neighbors else ruvector_texts[:3]
             structural_text = "\n".join(f"  - {item[:80]}" for item in structural_items)
@@ -482,7 +545,7 @@ class AnchorTensionTracker(Extension):
             )
 
         # Compact priors — top 3, 80-char snippets
-        if priors_texts and topic_novelty >= DRIFT_THRESHOLD:
+        if priors_texts and inject:
             priors_items = "\n".join(f"  - {item[:80]}" for item in priors_texts[:3])
             injection_parts.append(
                 f"\n[PRIORS]\n{priors_items}\n[/PRIORS]"
@@ -544,5 +607,5 @@ class AnchorTensionTracker(Extension):
         else:
             loop_data.extras_persistent.pop("quiver_drift", None)
             log_item.update(
-                heading=f"Anchors aligned: tension={topic_novelty:.2f} (threshold={DRIFT_THRESHOLD})",
+                heading=f"Anchors aligned: tension={topic_novelty:.2f} (inject≥{DRIFT_INJECT_THRESHOLD}, escalate≥{DRIFT_ESCALATE_THRESHOLD})",
             )
