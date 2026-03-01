@@ -512,6 +512,46 @@ class AnchorTensionTracker(Extension):
             "ruvector_failed": ruvector_failed,
         }
 
+        # Shadow log: durable JSONL audit trail for drift measurements.
+        # Mirrors the pattern used by chorus_telemetry.py and _60_ecotone_integrity.py.
+        # Must never crash the tracker — shadow is enrichment, not critical path.
+        try:
+            import datetime as _dt
+            _DRIFT_LOG_DIR = os.environ.get(
+                "DRIFT_LOG_DIR",
+                "/workspace/operationTorque/audit-logs/drift",
+            )
+            os.makedirs(_DRIFT_LOG_DIR, exist_ok=True)
+            _today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+            _cal = drift_data.get("calibration", {})
+            _shadow_entry = {
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "trace_id": trace_id,
+                "topic_novelty": round(topic_novelty, 4),
+                "semantic_alignment": round(semantic_alignment, 4),
+                "inter_store_novelty": round(inter_store_novelty, 4),
+                "query_isolation": round(query_isolation, 4),
+                "escalate": _cal.get("escalate", False),
+                "inject": _cal.get("inject", False),
+                "calibration_mode": _cal.get("mode"),
+                "window_size": _cal.get("window_size"),
+                "window_mean": _cal.get("window_mean"),
+                "window_std": _cal.get("window_std"),
+                "z_score": _cal.get("z_score"),
+                "surv_alert_count": len(drift_data.get("surveillance_alerts", [])),
+                "surv_alerts": drift_data.get("surveillance_alerts", []),
+                "cumulative_drifts": drift_data.get("cumulative_drifts", []),
+                "anchor_count": len(pattern_anchors),
+                "faiss_doc_count": len(faiss_texts),
+                "ruvector_doc_count": len(ruvector_texts),
+                "ruvector_failed": ruvector_failed,
+                "lock_candidate": drift_data.get("lock_candidate"),
+            }
+            with open(os.path.join(_DRIFT_LOG_DIR, f"{_today}.jsonl"), "a") as _f:
+                _f.write(json.dumps(_shadow_entry) + "\n")
+        except Exception:
+            pass  # Shadow log must never crash the tracker
+
         surv_count = len(surveillance_result.alerts) if surveillance_result else 0
         log_item.update(
             heading=(
