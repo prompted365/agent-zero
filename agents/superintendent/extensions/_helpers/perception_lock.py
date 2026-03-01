@@ -19,6 +19,7 @@ Used by:
   - _60_ecotone_integrity.py (decay on successful use)
 """
 
+import math
 import os
 import json
 import hashlib
@@ -510,6 +511,7 @@ def retrieve_coaching_epitaphs(
             "embedding": embedding,
             "top_k": top_k * 3,  # overfetch for filtering
             "collection": COLLECTION,
+            "include_vectors": True,  # for gaussian splat neighborhood scoring
         })
     except (urllib.error.URLError, Exception):
         return []
@@ -567,6 +569,8 @@ def retrieve_coaching_epitaphs(
             "id": r.get("id"),
             "score": score,
             "rank_score": rank_score,
+            "rank_score_linear": rank_score,  # preserve pre-splat score
+            "_embedding": r.get("embedding"),  # for splat, not serialized
             "context_shape": meta.get("context_shape", "unclassified"),
             "collapse_mode": meta.get("collapse_mode", ""),
             "corrective_disposition": meta.get("corrective_disposition", ""),
@@ -590,6 +594,51 @@ def retrieve_coaching_epitaphs(
             "hypothetical_age_weight": round(hypo_age_weight, 4),
             "last_seen": meta.get("last_seen", ""),
         })
+
+    # Two-pass gaussian splat re-ranking — boost epitaphs in dense neighborhoods
+    # Pass 1 already done: candidates have rank_score from methylation weighting.
+    # Pass 2: when embeddings are available, compute true pairwise cosine distance
+    # and blend gaussian neighborhood density into rank_score.
+    _SPLAT_RADIUS = 0.6   # calibrated for 384D cosine distance space
+    _SPLAT_SIGMA = 0.15
+    _SPLAT_BLEND = 0.3
+    has_embeddings = len(candidates) >= 2 and all(
+        c.get("_embedding") and len(c["_embedding"]) > 0
+        for c in candidates
+    )
+    if has_embeddings:
+        # Compute pairwise gaussian-weighted neighborhood score
+        splat_raw = {}
+        for i, c in enumerate(candidates):
+            ws, wt = 0.0, 0.0
+            for j, n in enumerate(candidates):
+                if i == j:
+                    continue
+                # True cosine distance
+                vec_a, vec_b = c["_embedding"], n["_embedding"]
+                dot = sum(a * b for a, b in zip(vec_a, vec_b))
+                ma = math.sqrt(sum(a * a for a in vec_a))
+                mb = math.sqrt(sum(b * b for b in vec_b))
+                dist = 1.0 - (dot / (ma * mb)) if (ma > 0 and mb > 0) else 1.0
+                if dist <= _SPLAT_RADIUS:
+                    w = math.exp(-(dist * dist) / (2.0 * _SPLAT_SIGMA * _SPLAT_SIGMA))
+                    ws += w * n["score"]
+                    wt += w
+            splat_raw[c["id"]] = ws / wt if wt > 0 else 0.0
+
+        # Normalize to [0, 1]
+        mx = max(splat_raw.values()) if splat_raw else 1.0
+        splat_norm = {k: v / mx if mx > 0 else 0.0 for k, v in splat_raw.items()}
+
+        # Blend into rank_score
+        for c in candidates:
+            splat = splat_norm.get(c["id"], 0.0)
+            c["splat_score"] = round(splat, 4)
+            c["rank_score"] = (1.0 - _SPLAT_BLEND) * c["rank_score_linear"] + _SPLAT_BLEND * splat
+
+    # Clean up internal embedding field before returning
+    for c in candidates:
+        c.pop("_embedding", None)
 
     candidates.sort(key=lambda c: c["rank_score"], reverse=True)
     selected = candidates[:top_k]
