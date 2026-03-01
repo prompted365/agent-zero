@@ -5,6 +5,11 @@ Provides a module-level NaiveSurveillance instance that persists across
 messages (module-level = process lifetime). Handles import failures
 gracefully so the drift tracker degrades to pattern-only mode.
 
+State persistence: regulation states and rolling observation window are
+saved to SQLite WAL after each observe() and restored on init. This
+survives container restarts (docker restart) which kill the process
+and evaporate module-level state.
+
 Three detection surfaces:
   1. Spike alerts (z-score deviation) — term + semantic matching
   2. Cumulative drift (rolling integral) — slow prestige creep
@@ -29,9 +34,20 @@ if _fc_src not in sys.path:
 _surveillance = None
 _init_attempted = False
 
+# Persistence path — WAL-mode SQLite for regulation state survival across restarts.
+# Default: alongside other audit-log DBs. Env override for testing.
+_SURVEILLANCE_STATE_DB = os.environ.get(
+    "SURVEILLANCE_STATE_DB",
+    os.path.join(_workspace, "audit-logs", "economy", "surveillance_state.sqlite"),
+)
+
 
 def get_surveillance():
-    """Return module-level NaiveSurveillance instance, or None if unavailable."""
+    """Return module-level NaiveSurveillance instance, or None if unavailable.
+
+    On first init, attempts to restore state from SQLite WAL (survives
+    container restart). If no persisted state, starts fresh.
+    """
     global _surveillance, _init_attempted
     if _init_attempted:
         return _surveillance
@@ -50,12 +66,31 @@ def get_surveillance():
             sigma_threshold=2.0,
             min_observations=3,
         )
-        logger.info("Naive surveillance layer initialized (Bridge 2+3, semantic+drift)")
+
+        # Restore persisted state (regulation + rolling window)
+        if _surveillance.load_state(_SURVEILLANCE_STATE_DB):
+            logger.info(
+                "Naive surveillance restored from WAL "
+                f"(obs={_surveillance.observation_count}, "
+                f"window={len(_surveillance._history)})"
+            )
+        else:
+            logger.info("Naive surveillance initialized fresh (no persisted state)")
+
     except Exception as e:
         logger.warning(f"Naive surveillance unavailable: {e}")
         _surveillance = None
 
     return _surveillance
+
+
+def save_surveillance_state():
+    """Persist current surveillance state to WAL. Call after observe().
+
+    Fail-silent — persistence is enrichment, not critical path.
+    """
+    if _surveillance is not None:
+        _surveillance.save_state(_SURVEILLANCE_STATE_DB)
 
 
 def format_surveillance_injection(surveillance_result, confirmed_families=None):

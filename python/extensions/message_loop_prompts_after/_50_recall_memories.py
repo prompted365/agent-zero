@@ -179,6 +179,13 @@ class RecallMemories(Extension):
             else:
                 raise
 
+        # Stash raw FAISS results for downstream dedup (_55 drift tracker).
+        # Drift tracker fires after recall — can skip its own FAISS scan
+        # when recall already searched MAIN+FRAGMENTS.
+        self.agent.set_data("_recall_faiss_docs", [
+            doc.page_content[:500] for doc in memories[:5]
+        ])
+
         if not memories and not solutions:
             log_item.update(
                 heading="No memories or solutions found",

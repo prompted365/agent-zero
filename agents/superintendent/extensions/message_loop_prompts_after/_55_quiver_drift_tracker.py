@@ -30,10 +30,11 @@ if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.pattern_cache import scan_text as scan_pattern_anchors
 try:
-    from _helpers.naive_bridge import get_surveillance, format_surveillance_injection
+    from _helpers.naive_bridge import get_surveillance, format_surveillance_injection, save_surveillance_state
 except Exception:
     get_surveillance = None
     format_surveillance_injection = None
+    save_surveillance_state = None
 
 RUVECTOR_URL = os.environ.get("RUVECTOR_URL", "http://host.docker.internal:6334")
 COLLECTION = os.environ.get("RUVECTOR_MOGUL_COLLECTION", "mogul_memory")
@@ -186,24 +187,35 @@ class AnchorTensionTracker(Extension):
 
         embedding = query_embedding.tolist()
 
-        # Search FAISS
-        faiss_docs = await db.search_similarity_threshold(
-            query=query[:1000],
-            limit=TOP_K,
-            threshold=0.5,
-            filter=f"area == '{Memory.Area.MAIN.value}' or area == '{Memory.Area.FRAGMENTS.value}'",
-        )
-        faiss_texts = [doc.page_content[:200] for doc in faiss_docs]
-
-        # Compute FAISS centroid via top-1 proxy (was: re-embed all N results = N calls)
-        # Top-1 result is the strongest signal; full centroid adds marginal precision
-        # at 5x the embedding cost. Single re-embed preserves semantic alignment measurement.
-        if faiss_docs:
+        # FAISS dedup: check if _50_recall_memories already searched MAIN+FRAGMENTS.
+        # Recall fires at _50 (before us at _55) and stashes raw doc texts.
+        # Reusing recall's results saves one FAISS index scan per monologue.
+        # Centroid is still re-embedded from top-1 text for alignment accuracy.
+        recall_faiss = self.agent.context.get_data("_recall_faiss_docs")
+        if recall_faiss and len(recall_faiss) > 0:
+            faiss_texts = [text[:200] for text in recall_faiss[:TOP_K]]
+            faiss_docs = recall_faiss  # For length checks downstream
+            # Compute centroid from recall's top-1 (re-embed for accuracy)
             faiss_centroid = np.array(
-                db.db.embedding_function.embed_query(faiss_docs[0].page_content[:500])
+                db.db.embedding_function.embed_query(recall_faiss[0][:500])
             )
         else:
-            faiss_centroid = query_embedding
+            # Fallback: recall didn't fire or returned empty — do own search
+            faiss_docs = await db.search_similarity_threshold(
+                query=query[:1000],
+                limit=TOP_K,
+                threshold=0.5,
+                filter=f"area == '{Memory.Area.MAIN.value}' or area == '{Memory.Area.FRAGMENTS.value}'",
+            )
+            faiss_texts = [doc.page_content[:200] for doc in faiss_docs]
+
+            # Compute FAISS centroid via top-1 proxy
+            if faiss_docs:
+                faiss_centroid = np.array(
+                    db.db.embedding_function.embed_query(faiss_docs[0].page_content[:500])
+                )
+            else:
+                faiss_centroid = query_embedding
 
         # Search RuVector
         ruvector_texts = []
@@ -334,6 +346,13 @@ class AnchorTensionTracker(Extension):
                 except Exception:
                     pass
 
+        # Persist surveillance state to WAL (survives container restart)
+        if save_surveillance_state is not None:
+            try:
+                save_surveillance_state()
+            except Exception:
+                pass  # Persistence is enrichment, not critical path
+
         # RuVector graph neighborhood (structural context)
         ruvector_neighbors = []
         for rid in ruvector_ids[:3]:
@@ -349,9 +368,18 @@ class AnchorTensionTracker(Extension):
             except Exception:
                 pass  # Graph endpoint may not exist yet
 
+        # Compute drift_band from topic_novelty (for BICAM context surface)
+        if topic_novelty >= 0.8:
+            drift_band = "high"
+        elif topic_novelty >= 0.5:
+            drift_band = "medium"
+        else:
+            drift_band = "low"
+
         # Build drift data (backward compatible key "drift" = topic_novelty)
         drift_data = {
             "drift": topic_novelty,
+            "drift_band": drift_band,
             "semantic_alignment": semantic_alignment,
             "inter_store_novelty": inter_store_novelty,
             "query_isolation": query_isolation,
@@ -543,6 +571,7 @@ class AnchorTensionTracker(Extension):
                 "cumulative_drifts": drift_data.get("cumulative_drifts", []),
                 "anchor_count": len(pattern_anchors),
                 "faiss_doc_count": len(faiss_texts),
+                "faiss_source": "recall_dedup" if recall_faiss else "direct",
                 "ruvector_doc_count": len(ruvector_texts),
                 "ruvector_failed": ruvector_failed,
                 "lock_candidate": drift_data.get("lock_candidate"),
