@@ -110,19 +110,29 @@ class QuiverMemorySync(Extension):
             # Get FAISS memory to access embedder
             db = await Memory.get(self.agent)
 
-            # Extract memories from current conversation (same approach as memorize_fragments)
-            # Cap history text to prevent OOM during utility model call when
-            # conversation + Collective Center injection accumulates
-            system = self.agent.read_prompt("memory.memories_sum.sys.md")
-            msgs_text = self.agent.concat_messages(self.agent.history)
-            if len(msgs_text) > 4000:
-                msgs_text = msgs_text[-4000:]
+            # Consume memories already extracted by _50_memorize_fragments (same prompt, same input).
+            # Poll briefly since _50 runs in a background thread and may not have finished yet.
+            memories_json = None
+            for _wait in range(6):  # up to 30s of polling (5s * 6)
+                memories_json = self.agent.get_data("_memorized_fragments_raw")
+                if memories_json:
+                    break
+                import asyncio
+                await asyncio.sleep(5)
 
-            memories_json = await self.agent.call_utility_model(
-                system=system,
-                message=msgs_text,
-                background=True,
-            )
+            # Fallback: if _50 hasn't produced output (failed, disabled, or timed out),
+            # do our own extraction. This should be rare.
+            if not memories_json:
+                logger.info("No cached fragments from _50 — falling back to own LLM call")
+                system = self.agent.read_prompt("memory.memories_sum.sys.md")
+                msgs_text = self.agent.concat_messages(self.agent.history)
+                if len(msgs_text) > 4000:
+                    msgs_text = msgs_text[-4000:]
+                memories_json = await self.agent.call_utility_model(
+                    system=system,
+                    message=msgs_text,
+                    background=True,
+                )
 
             if not memories_json or not isinstance(memories_json, str):
                 log_item.update(heading="No memories to sync to RuVector.")

@@ -69,6 +69,10 @@ class MemorizeMemories(Extension):
                 log_item.update(heading="Empty response from utility model.")
                 return
 
+            # Stash raw JSON for downstream consumers (_55_quiver_memory_sync)
+            # so they don't have to call the LLM again with the same prompt.
+            self.agent.set_data("_memorized_fragments_raw", memories_json)
+
             try:
                 memories = DirtyJson.parse_string(memories_json)
             except Exception as e:
