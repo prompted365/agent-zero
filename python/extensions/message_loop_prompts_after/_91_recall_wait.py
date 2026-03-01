@@ -30,7 +30,7 @@ class RecallWait(Extension):
                 self.agent.context.log.log(
                     type="warning",
                     heading="Memory recall timed out",
-                    content="Memory search exceeded 30s timeout. Proceeding without recalled memories. This may be caused by OpenRouter latency or large FAISS index.",
+                    content="Memory search exceeded 5m timeout. Proceeding without recalled memories. This may be caused by OpenRouter latency or large FAISS index.",
                 )
             except Exception as e:
                 self.agent.context.log.log(

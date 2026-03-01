@@ -230,7 +230,7 @@ class QuiverMemorySync(Extension):
                         method="POST",
                     )
                     req.add_header("Content-Type", "application/json")
-                    with urllib.request.urlopen(req, timeout=30) as resp:
+                    with urllib.request.urlopen(req, timeout=120) as resp:  # graph build is expensive
                         resp.read()
                     graph_built = True
                 except Exception as e:

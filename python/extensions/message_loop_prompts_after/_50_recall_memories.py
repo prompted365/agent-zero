@@ -1,14 +1,27 @@
 import asyncio
+import hashlib
 from python.helpers.extension import Extension
 from python.helpers.memory import Memory
 from agent import LoopData
 from python.tools.memory_load import DEFAULT_THRESHOLD as DEFAULT_MEMORY_THRESHOLD
-from python.helpers import dirty_json, errors, settings, log 
+from python.helpers import dirty_json, errors, settings, log
 
 
 DATA_NAME_TASK = "_recall_memories_task"
 DATA_NAME_ITER = "_recall_memories_iter"
-SEARCH_TIMEOUT = 30
+SEARCH_TIMEOUT = 300  # 5 minutes — reasoning models need breathing room
+
+# Module-level query cache: avoids redundant FAISS searches for identical queries.
+# Keyed by (query_hash, threshold, mem_limit, sol_limit). Value: (memories_txt, solutions_txt).
+# Survives across iterations within the same monologue (module-level var).
+# Max 8 entries to bound memory. Cleared on process restart.
+_query_cache: dict[str, tuple[str, str]] = {}
+_QUERY_CACHE_MAX = 8
+
+
+def _cache_key(query: str, threshold: float, mem_limit: int, sol_limit: int) -> str:
+    h = hashlib.md5(query.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"{h}:{threshold}:{mem_limit}:{sol_limit}"
 
 
 class RecallMemories(Extension):
@@ -114,6 +127,23 @@ class RecallMemories(Extension):
             log_item.update(
                 query="No relevant memory query generated, skipping search",
             )
+            return
+
+        # Check query cache before hitting FAISS
+        global _query_cache
+        ck = _cache_key(
+            query,
+            set["memory_recall_similarity_threshold"],
+            set["memory_recall_memories_max_search"],
+            set["memory_recall_solutions_max_search"],
+        )
+        if ck in _query_cache:
+            cached_mem, cached_sol = _query_cache[ck]
+            log_item.update(heading="Recalled from query cache (FAISS skipped)")
+            if cached_mem:
+                extras["memories"] = cached_mem
+            if cached_sol:
+                extras["solutions"] = cached_sol
             return
 
         # get memory database
@@ -223,11 +253,22 @@ class RecallMemories(Extension):
             log_item.update(solutions=solutions_txt)
 
         # place to prompt
+        mem_prompt = ""
+        sol_prompt = ""
         if memories_txt:
-            extras["memories"] = self.agent.parse_prompt(
+            mem_prompt = self.agent.parse_prompt(
                 "agent.system.memories.md", memories=memories_txt
             )
+            extras["memories"] = mem_prompt
         if solutions_txt:
-            extras["solutions"] = self.agent.parse_prompt(
+            sol_prompt = self.agent.parse_prompt(
                 "agent.system.solutions.md", solutions=solutions_txt
             )
+            extras["solutions"] = sol_prompt
+
+        # Cache the formatted results for identical future queries
+        if mem_prompt or sol_prompt:
+            if len(_query_cache) >= _QUERY_CACHE_MAX:
+                # Evict oldest entry (FIFO)
+                _query_cache.pop(next(iter(_query_cache)))
+            _query_cache[ck] = (mem_prompt, sol_prompt)
