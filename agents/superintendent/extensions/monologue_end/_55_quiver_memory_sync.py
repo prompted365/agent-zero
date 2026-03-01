@@ -253,8 +253,8 @@ class QuiverMemorySync(Extension):
             # Step 4: SONA trajectory feed
             try:
                 self._feed_sona_trajectory(synced, len(entities), len(pattern_matches))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"SONA trajectory feed failed: {str(e)[:200]}")
 
             log_item.update(
                 heading=(
@@ -362,10 +362,12 @@ class QuiverMemorySync(Extension):
     def _feed_sona_trajectory(self, memory_count: int, entity_count: int, pattern_count: int):
         """Feed sync metrics to SONA trajectory endpoint."""
         payload = {
-            "memory_count": memory_count,
-            "entity_count": entity_count,
-            "pattern_anchors": pattern_count,
-            "timestamp": Memory.get_timestamp(),
+            "trajectory": {
+                "memory_count": memory_count,
+                "entity_count": entity_count,
+                "pattern_anchors": pattern_count,
+                "timestamp": Memory.get_timestamp(),
+            }
         }
         body = json.dumps(payload).encode()
         req = urllib.request.Request(

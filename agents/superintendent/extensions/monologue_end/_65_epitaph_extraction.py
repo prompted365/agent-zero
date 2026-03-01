@@ -27,6 +27,7 @@ _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
 from _helpers.perception_lock import create_epitaph, sync_journal_epitaphs, _ruvector_post, COLLECTION
+from _helpers.signal_emitter import emit_signal, make_dedup_signal_id
 import glob as _glob
 
 # failure_code → context_shape (deterministic mapping)
@@ -387,7 +388,7 @@ class EpitaphExtraction(Extension):
 
         # create_epitaph now mints to WAL first, then RuVector best-effort.
         # Returns doc_id regardless of embedding/RuVector success.
-        return create_epitaph(
+        doc_id = create_epitaph(
             embedding=embedding,
             context_shape=context_shape,
             collapse_mode=collapse_mode,
@@ -400,3 +401,28 @@ class EpitaphExtraction(Extension):
             source_event=source_event,
             birth_conformation=birth_conf,
         )
+
+        # Emit LESSON signal on successful epitaph mint — unblocks harmonic triad detection
+        if doc_id:
+            trace_id = self.agent.context.get_data("_current_trace_id") or ""
+            emit_signal(
+                signal_id=make_dedup_signal_id("epitaph", f"lesson_{failure_code}"),
+                kind="LESSON",
+                band="COGNITIVE",
+                subsystem="epitaph",
+                source=f"_65_epitaph_extraction.py:{source_event}",
+                signature=f"epitaph_minted:{failure_code}:{context_shape}",
+                volume=20,
+                volume_rate=5,
+                max_volume=60,
+                ttl_hours=48,
+                suggested_checks=[
+                    f"Review epitaph {doc_id}",
+                    f"Check chorus pool depth after {failure_code} addition",
+                ],
+                links=[f"audit-logs/economy/epitaph_store.sqlite"],
+                summary=f"Epitaph minted from {failure_code} failure — {collapse_mode} under {trigger_signature}",
+                trace_id=trace_id,
+            )
+
+        return doc_id

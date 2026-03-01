@@ -142,6 +142,18 @@ class EcotoneIntegrity(Extension):
             if not verdict["pass"]:
                 self._emit_failure_signal(verdict, drift, 0, trace_id=_trace_id)
                 self._log_epitaph(drift, verdict, 0, response)
+                # Store failure in cross-message persistence for epitaph extraction
+                ecotone_failures = self.agent.context.get_data("_ecotone_failures") or []
+                ecotone_failures.append({
+                    "failure_code": verdict.get("failure_code", "MOTIVATION_BLOCK"),
+                    "evidence": verdict.get("evidence", "")[:500],
+                    "drift_score": drift,
+                    "pattern_anchors": (drift_data or {}).get("pattern_anchors", []),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "trace_id": _trace_id,
+                    "event_surface": "motivation_gate",
+                })
+                self.agent.context.set_data("_ecotone_failures", ecotone_failures)
                 # Pop the response and inject feedback
                 if self.agent.history.current.messages:
                     self.agent.history.current.messages.pop()
@@ -504,8 +516,8 @@ class EcotoneIntegrity(Extension):
                 background=True,
             )
 
-            if result is None:
-                return {"pass": True, "failure_code": None, "evidence": "utility model returned None", "check_type": "motivation_audit"}
+            if result is None or not str(result).strip():
+                return {"pass": True, "failure_code": None, "evidence": "utility model returned empty/None (possible dedup)", "check_type": "motivation_audit"}
 
             result = result.strip()
             if result.startswith("```"):
@@ -554,9 +566,13 @@ class EcotoneIntegrity(Extension):
                 background=True,
             )
 
-            # Guard against None from utility model
-            if result is None:
-                return {"pass": True, "failure_code": None, "evidence": "utility model returned None", "check_type": "utility_model"}
+            # Guard against None or empty from utility model (NoOpModel dedup returns "")
+            if result is None or not str(result).strip():
+                self.agent.context.log.log(
+                    type="warning",
+                    heading=f"Ecotone: utility model returned empty (dedup?), treating as SHALLOW_PASS",
+                )
+                return {"pass": False, "failure_code": "SHALLOW_PASS", "evidence": "utility model returned empty/None (possible dedup)", "check_type": "utility_model"}
             # Parse JSON from response
             result = result.strip()
             # Handle markdown code fences

@@ -20,6 +20,7 @@ Design:
 import os
 import sys
 import json
+import logging
 import aiohttp
 from datetime import datetime, timezone
 from python.helpers.extension import Extension
@@ -30,8 +31,13 @@ from python.helpers.print_style import PrintStyle
 _ext_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ext_dir not in sys.path:
     sys.path.insert(0, _ext_dir)
+from _helpers.perception_lock import create_epitaph
+
+logger = logging.getLogger("fork_accounting")
 
 FOREMAN_URL = os.environ.get("NAUTILUS_FOREMAN_URL", "http://nautilus-foreman:8090")
+# Containment fork threshold: repeated forks in one context escalate to epitaph
+CONTAINMENT_FORK_THRESHOLD = int(os.environ.get("CONTAINMENT_FORK_THRESHOLD", "3"))
 FORK_LOG_DIR = os.environ.get(
     "FORK_LOG_DIR",
     "/workspace/operationTorque/audit-logs/economy",
@@ -60,6 +66,16 @@ class ForkAccounting(Extension):
 
             # Always log to JSONL as backup
             self._log_fork_events(fork_count, total, reported)
+
+            # Mint epitaph for containment forks (LOCK events)
+            lock_handled = self.agent.context.get_data("_lock_handled_this_monologue")
+            if lock_handled:
+                self._mint_containment_epitaph(lock_handled)
+
+            # Escalate repeated forks: if cumulative total crosses threshold,
+            # mint a fork_reprimand epitaph (structural failure indicator)
+            if total >= CONTAINMENT_FORK_THRESHOLD and total - fork_count < CONTAINMENT_FORK_THRESHOLD:
+                self._mint_repeated_fork_epitaph(total)
 
             PrintStyle.hint(
                 f"[ForkAccounting] {fork_count} fork event(s) this monologue "
@@ -133,3 +149,52 @@ class ForkAccounting(Extension):
                 f.write(json.dumps(entry) + "\n")
         except Exception:
             pass
+
+    def _mint_containment_epitaph(self, lock_info):
+        """Mint epitaph for containment fork (LOCK event). Taxonomy: containment → immediate chorus."""
+        try:
+            archetype = lock_info.get("archetype", "unknown") if isinstance(lock_info, dict) else "unknown"
+            trace_id = self.agent.context.get_data("_current_trace_id") or ""
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            now_ts = datetime.now(timezone.utc).strftime("%H%M%S")
+            create_epitaph(
+                embedding=None,
+                context_shape=f"containment_fork:{archetype}",
+                collapse_mode="lock_checkpoint",
+                corrective_disposition=f"High-confidence {archetype} required human review checkpoint",
+                trigger_signature=f"lock:{archetype}:containment",
+                drift_band="PRIMITIVE",
+                weight=0.9,
+                failure_code="CONTAINMENT_FORK",
+                source="fork_accounting",
+                source_event=f"fork_{today}_{now_ts}",
+                event_surface="fork_reprimand",
+                cause_chain=[f"lock_event:{archetype}", f"trace:{trace_id}"],
+            )
+            logger.info(f"Containment fork epitaph minted for {archetype}")
+        except Exception as e:
+            logger.warning(f"Containment fork epitaph mint failed: {e}")
+
+    def _mint_repeated_fork_epitaph(self, total: int):
+        """Mint epitaph when cumulative forks cross threshold. Structural failure indicator."""
+        try:
+            trace_id = self.agent.context.get_data("_current_trace_id") or ""
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            now_ts = datetime.now(timezone.utc).strftime("%H%M%S")
+            create_epitaph(
+                embedding=None,
+                context_shape=f"repeated_fork:total_{total}",
+                collapse_mode="fork_accumulation",
+                corrective_disposition=f"Accumulated {total} governance interventions — structural pattern, not isolated event",
+                trigger_signature=f"fork_reprimand:threshold_{CONTAINMENT_FORK_THRESHOLD}",
+                drift_band="COGNITIVE",
+                weight=0.7,
+                failure_code="FORK_REPRIMAND",
+                source="fork_accounting",
+                source_event=f"fork_{today}_{now_ts}",
+                event_surface="fork_reprimand",
+                cause_chain=[f"cumulative_forks:{total}", f"trace:{trace_id}"],
+            )
+            logger.info(f"Repeated fork epitaph minted at total={total}")
+        except Exception as e:
+            logger.warning(f"Repeated fork epitaph mint failed: {e}")
