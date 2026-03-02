@@ -44,6 +44,15 @@ class CircuitBreakerConfig:
 
 
 @dataclass(frozen=True)
+class LaneCConfig:
+    """Configuration for the Lane C governance coherence gate."""
+    enabled: bool = False
+    incompatibility_lock_threshold: float = 0.40
+    min_activated_councils: int = 2
+    min_amplitude: float = 0.10
+
+
+@dataclass(frozen=True)
 class TricameralConfig:
     """Top-level configuration for the tricameral router."""
     enabled: bool = False
@@ -60,6 +69,7 @@ class TricameralConfig:
     circuit_breaker: CircuitBreakerConfig = field(
         default_factory=CircuitBreakerConfig,
     )
+    lane_c: LaneCConfig = field(default_factory=LaneCConfig)
 
 
 def _env(key: str, default: str = "") -> str:
@@ -92,6 +102,18 @@ def load_config() -> TricameralConfig:
             max_pending=int(_env("CIRCUIT_BREAKER_MAX_PENDING", "3")),
             dedup_window=int(_env("CIRCUIT_BREAKER_DEDUP_WINDOW", "5")),
         ),
+        lane_c=LaneCConfig(
+            enabled=_bool(_env("LANE_C_ENABLED", "false")),
+            incompatibility_lock_threshold=float(
+                _env("LANE_C_LOCK_THRESHOLD", "0.40")
+            ),
+            min_activated_councils=int(
+                _env("LANE_C_MIN_COUNCILS", "2")
+            ),
+            min_amplitude=float(
+                _env("LANE_C_MIN_AMPLITUDE", "0.10")
+            ),
+        ),
     )
 
 
@@ -120,6 +142,18 @@ LANE_B_PATTERNS = [
     r"epitaph",
     r"invariant",
     r"structural pattern",
+]
+
+LANE_C_PATTERNS = [
+    r"governance",
+    r"council",
+    r"tension cluster",
+    r"pole[_ ]?a|pole[_ ]?b",
+    r"incompatib",
+    r"coherence gate",
+    r"coordination trigger",
+    r"conformity trap",
+    r"perception lock",
 ]
 
 META_PATTERNS = [

@@ -48,6 +48,7 @@ from _helpers.router_config import (
     TricameralConfig,
     LANE_A_PATTERNS,
     LANE_B_PATTERNS,
+    LANE_C_PATTERNS,
     META_PATTERNS,
 )
 from _helpers.context_surface import ContextSurface
@@ -65,6 +66,7 @@ _initialized = False
 # Pre-compiled regex patterns for lane assignment
 _lane_a_re = None
 _lane_b_re = None
+_lane_c_re = None
 _meta_re = None
 _round_robin_counter = 0
 
@@ -72,7 +74,7 @@ _round_robin_counter = 0
 def _init_models(agent):
     """Lazy-initialize models and config on first call."""
     global _config, _model_a, _model_b, _router_model, _surface
-    global _initialized, _lane_a_re, _lane_b_re, _meta_re
+    global _initialized, _lane_a_re, _lane_b_re, _lane_c_re, _meta_re
 
     if _initialized:
         return
@@ -127,6 +129,7 @@ def _init_models(agent):
     # Compile lane regex patterns
     _lane_a_re = re.compile("|".join(LANE_A_PATTERNS), re.IGNORECASE)
     _lane_b_re = re.compile("|".join(LANE_B_PATTERNS), re.IGNORECASE)
+    _lane_c_re = re.compile("|".join(LANE_C_PATTERNS), re.IGNORECASE)
     _meta_re = re.compile("|".join(META_PATTERNS), re.IGNORECASE)
 
     _initialized = True
@@ -156,11 +159,15 @@ class NoOpModel:
 def _fingerprint_lane(system_prompt: str) -> tuple[str, str]:
     """
     Deterministic lane assignment based on system prompt content.
-    Returns (lane, category) where lane is "A", "B", or "meta".
+    Returns (lane, category) where lane is "A", "B", "C", or "meta".
     """
     if _lane_a_re and _lane_a_re.search(system_prompt):
         match = _lane_a_re.search(system_prompt)
         return "A", match.group(0) if match else "faiss"
+
+    if _lane_c_re and _lane_c_re.search(system_prompt):
+        match = _lane_c_re.search(system_prompt)
+        return "C", match.group(0) if match else "governance"
 
     if _lane_b_re and _lane_b_re.search(system_prompt):
         match = _lane_b_re.search(system_prompt)
@@ -223,6 +230,39 @@ class TricameralRouter(Extension):
         score_a = _surface.get_lane_score("A")
         score_b = _surface.get_lane_score("B")
 
+        # Lane C governance coherence gate (routes through Lane B model)
+        coherence_injection = None
+        if lane == "C" and _config.lane_c.enabled:
+            try:
+                from _helpers.council_coherence import (
+                    evaluate_coherence,
+                    format_coherence_injection,
+                )
+                # Get archetype amplitudes from surveillance via AgentContext.data
+                surveillance_data = self.agent.context.get_data("_surveillance_snapshot") or {}
+                archetype_amplitudes = surveillance_data.get("amplitudes", {})
+                trace_id = (self.agent.context.get_data("_current_trace_id") or "")
+
+                if archetype_amplitudes:
+                    coherence_result = evaluate_coherence(archetype_amplitudes, trace_id)
+                    coherence_injection = format_coherence_injection(coherence_result)
+
+                    # Escalate LOCK candidate to AgentContext.data
+                    if coherence_result.is_lock_candidate:
+                        self.agent.context.set_data("lane_c_lock_candidate", {
+                            "councils": coherence_result.activated_councils,
+                            "max_incompatibility": coherence_result.max_incompatibility,
+                            "trace_id": trace_id,
+                        })
+            except Exception as e:
+                self.agent.context.log.log(
+                    type="warning",
+                    heading="Lane C coherence gate error",
+                    content=str(e),
+                )
+            # Lane C routes through Lane B's model
+            lane = "B"
+
         if lane in ("meta", "round_robin"):
             # No fingerprint affinity — pure load-based selection
             lane = "A" if score_a <= score_b else "B"
@@ -230,7 +270,7 @@ class TricameralRouter(Extension):
             if category == "unknown":
                 _round_robin_counter += 1
                 category = f"rr_{_round_robin_counter}"
-        else:
+        elif lane in ("A", "B"):
             # Fingerprinted lane, but redirect if significantly more loaded
             if lane == "A" and score_a > score_b * 2 and score_b > 0:
                 lane = "B"
@@ -245,7 +285,10 @@ class TricameralRouter(Extension):
 
         # 5. Inject context surface projection into system prompt
         projection = _surface.get_projection()
-        call_data["system"] = f"{projection}\n{system}"
+        if coherence_injection:
+            call_data["system"] = f"{projection}\n{coherence_injection}\n{system}"
+        else:
+            call_data["system"] = f"{projection}\n{system}"
 
         # 6. Update surface state (pending++)
         _surface.begin_call(lane, category)
