@@ -1,9 +1,13 @@
 """
-Bicameral Context Surface — shared in-memory state projected across both model lanes.
+Tricameral Context Surface — shared in-memory state projected across all model lanes.
 
 Thread-safe singleton tracking call frequencies, lane loads, and circuit breaker state.
 Compressed to a single-line prefix injected into every utility model system prompt,
-giving both models cross-lane awareness without direct communication.
+giving all models cross-lane awareness without direct communication.
+
+Lane A: narrative priors (Aesop/Prophet recall, FAISS-associated)
+Lane B: empirical recall (RuVector, user memory)
+Lane C: governance priors (Councils + triggers + constraints) [Phase 2]
 
 Ephemeral working state only — no persistence needed.
 """
@@ -18,7 +22,7 @@ _WINDOW_SECONDS = 60.0
 
 
 class ContextSurface:
-    """Thread-safe singleton tracking bicameral router state."""
+    """Thread-safe singleton tracking tricameral router state."""
 
     _instance = None
     _init_lock = threading.Lock()
@@ -181,7 +185,7 @@ class ContextSurface:
         """
         Compressed single-line state for system prompt injection.
 
-        Format: [BICAM: tick=42 drift=medium chorus=novel A:1pending B:2pending skip:3 freq:F12/R8/M5]
+        Format: [TRICAM: tick=42 drift=medium chorus=novel A:1pending B:2pending skip:3 freq:F12/R8/M5]
         """
         now = time.monotonic()
         with self._lock:
@@ -191,7 +195,7 @@ class ContextSurface:
             s_count = self._prune_window(self._skipped_calls, now)
 
             return (
-                f"[BICAM: tick={self._tick} "
+                f"[TRICAM: tick={self._tick} "
                 f"drift={self._drift_band} "
                 f"chorus={self._chorus_mode} "
                 f"A:{self._lane_a_pending}pending "

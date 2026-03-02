@@ -1,8 +1,14 @@
 """
-Bicameral Router Configuration — env-var-driven config for the model orchestrator.
+Tricameral Router Configuration — env-var-driven config for the model orchestrator.
 
 All values read from environment with sensible defaults. This is operational
 infrastructure, not user-facing — Docker env vars are the right surface.
+
+Lane A: narrative priors (Aesop/Prophet, FAISS recall)
+Lane B: empirical recall (RuVector, user memory)
+Lane C: governance priors (Councils + triggers + constraints) [Phase 2]
+
+Env vars support both TRICAM_ and BICAM_ prefixes for backwards compatibility.
 """
 
 import os
@@ -38,8 +44,8 @@ class CircuitBreakerConfig:
 
 
 @dataclass(frozen=True)
-class BicameralConfig:
-    """Top-level configuration for the bicameral router."""
+class TricameralConfig:
+    """Top-level configuration for the tricameral router."""
     enabled: bool = False
     model_a: LaneModelConfig = field(default_factory=lambda: LaneModelConfig(
         provider="openrouter", name="qwen/qwen3.5-plus-02-15",
@@ -56,32 +62,41 @@ class BicameralConfig:
     )
 
 
-def load_config() -> BicameralConfig:
-    """Load bicameral router config from environment variables."""
-    return BicameralConfig(
-        enabled=_bool(os.environ.get("BICAM_ENABLED", "false")),
+def _env(key: str, default: str = "") -> str:
+    """Read env var with TRICAM_ prefix, falling back to BICAM_ for compat."""
+    return os.environ.get(f"TRICAM_{key}", os.environ.get(f"BICAM_{key}", default))
+
+
+def load_config() -> TricameralConfig:
+    """Load tricameral router config from environment variables."""
+    return TricameralConfig(
+        enabled=_bool(_env("ENABLED", "false")),
         model_a=LaneModelConfig(
-            provider=os.environ.get("BICAM_MODEL_A_PROVIDER", "openrouter"),
-            name=os.environ.get("BICAM_MODEL_A_NAME", "qwen/qwen3.5-plus-02-15"),
-            api_key=os.environ.get("BICAM_MODEL_A_API_KEY", ""),
-            api_base=os.environ.get("BICAM_MODEL_A_API_BASE", ""),
+            provider=_env("MODEL_A_PROVIDER", "openrouter"),
+            name=_env("MODEL_A_NAME", "qwen/qwen3.5-plus-02-15"),
+            api_key=_env("MODEL_A_API_KEY"),
+            api_base=_env("MODEL_A_API_BASE"),
         ),
         model_b=LaneModelConfig(
-            provider=os.environ.get("BICAM_MODEL_B_PROVIDER", "openrouter"),
-            name=os.environ.get("BICAM_MODEL_B_NAME", "qwen/qwen3.5-plus-02-15"),
-            api_key=os.environ.get("BICAM_MODEL_B_API_KEY", ""),
-            api_base=os.environ.get("BICAM_MODEL_B_API_BASE", ""),
+            provider=_env("MODEL_B_PROVIDER", "openrouter"),
+            name=_env("MODEL_B_NAME", "qwen/qwen3.5-plus-02-15"),
+            api_key=_env("MODEL_B_API_KEY"),
+            api_base=_env("MODEL_B_API_BASE"),
         ),
         router=RouterModelConfig(
-            provider=os.environ.get("BICAM_ROUTER_PROVIDER", "ollama"),
-            name=os.environ.get("BICAM_ROUTER_NAME", "gemma3:270m"),
-            api_base=os.environ.get("BICAM_ROUTER_API_BASE", "http://ollama:11434"),
+            provider=_env("ROUTER_PROVIDER", "ollama"),
+            name=_env("ROUTER_NAME", "gemma3:270m"),
+            api_base=_env("ROUTER_API_BASE", "http://ollama:11434"),
         ),
         circuit_breaker=CircuitBreakerConfig(
-            max_pending=int(os.environ.get("BICAM_CIRCUIT_BREAKER_MAX_PENDING", "3")),
-            dedup_window=int(os.environ.get("BICAM_CIRCUIT_BREAKER_DEDUP_WINDOW", "5")),
+            max_pending=int(_env("CIRCUIT_BREAKER_MAX_PENDING", "3")),
+            dedup_window=int(_env("CIRCUIT_BREAKER_DEDUP_WINDOW", "5")),
         ),
     )
+
+
+# Backwards compatibility alias
+BicameralConfig = TricameralConfig
 
 
 # --- Lane assignment patterns ---

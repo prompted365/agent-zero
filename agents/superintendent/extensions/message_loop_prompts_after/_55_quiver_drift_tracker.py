@@ -368,7 +368,7 @@ class AnchorTensionTracker(Extension):
             except Exception:
                 pass  # Graph endpoint may not exist yet
 
-        # Compute drift_band from topic_novelty (for BICAM context surface)
+        # Compute drift_band from topic_novelty (for TRICAM context surface)
         if topic_novelty >= 0.8:
             drift_band = "high"
         elif topic_novelty >= 0.5:

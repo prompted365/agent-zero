@@ -255,7 +255,7 @@ class GhostChorus(Extension):
         self.agent.context.set_data("_chorus_epitaph_ids", [
             ep["id"] for ep in epitaphs if ep.get("id")
         ])
-        # Metadata for bicameral router (internal bookkeeping → AgentContext.data)
+        # Metadata for tricameral router (internal bookkeeping → AgentContext.data)
         self.agent.context.set_data("_chorus_meta", {
             "mode": chorus_mode,
             "abstraction_level": abstraction_level,

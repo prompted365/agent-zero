@@ -1,11 +1,11 @@
 """
-Bicameral Model Orchestrator — Router + Load Balancer for Mogul
+Tricameral Model Orchestrator — Router + Load Balancer for Mogul
 
 Fires at util_model_call_before (before every utility model call).
 Routes calls to one of two backend models using least-pending-normalized
 selection: score = pending_count * ema_latency_ms, pick the lower lane.
 
-Transparent: when BICAM_ENABLED=false, all calls proceed with the
+Transparent: when TRICAM_ENABLED=false, all calls proceed with the
 default utility model. Existing extensions are unmodified.
 
 Architecture:
@@ -13,8 +13,11 @@ Architecture:
         |
   [util_model_call_before]
         |
-  _10_bicameral_router
-   1. Fingerprint caller (regex on system prompt) → lane A/B/meta
+  _10_tricameral_router
+   Lane A: narrative priors (Aesop/Prophet recall, FAISS-associated)
+   Lane B: empirical recall (RuVector, user memory)
+   Lane C: governance priors (Councils + triggers + constraints) [Phase 2]
+   1. Fingerprint caller (regex on system prompt) → lane A/B/C/meta
    2. Dedup check (hash-based, zero overhead)
    3. Lane score comparison → pick least loaded
    4. Replace call_data["model"] with lane model
@@ -22,6 +25,8 @@ Architecture:
 
 Note: _router_model (Gemma 3 via Ollama) is still constructed at init
 for future workflow use, but is NOT in the routing hot path.
+Lane C routing is Phase 2 — currently all governance queries route
+through Lane B (RuVector) until Lane C design is finalized.
 """
 
 import hashlib
@@ -40,7 +45,7 @@ if _ext_dir not in sys.path:
 
 from _helpers.router_config import (
     load_config,
-    BicameralConfig,
+    TricameralConfig,
     LANE_A_PATTERNS,
     LANE_B_PATTERNS,
     META_PATTERNS,
@@ -49,7 +54,7 @@ from _helpers.context_surface import ContextSurface
 
 # --- Module-level singletons (constructed once per process) ---
 
-_config: BicameralConfig | None = None
+_config: TricameralConfig | None = None
 _model_a = None
 _model_b = None
 _router_model = None
@@ -128,7 +133,7 @@ def _init_models(agent):
 
     agent.context.log.log(
         type="info",
-        heading="Bicameral router initialized",
+        heading="Tricameral router initialized",
         content=(
             f"Lane A: {_config.model_a.provider}/{_config.model_a.name}\n"
             f"Lane B: {_config.model_b.provider}/{_config.model_b.name}\n"
@@ -181,7 +186,7 @@ def _is_duplicate(req_hash: str) -> bool:
     return False
 
 
-class BicameralRouter(Extension):
+class TricameralRouter(Extension):
     __version__ = "1.0.0"
     __requires_a0__ = ">=0.8"
     __schema__ = "call_data[model,system] (write)"
@@ -208,7 +213,7 @@ class BicameralRouter(Extension):
             call_data["model"] = NoOpModel()
             self.agent.context.log.log(
                 type="util",
-                heading=f"Bicameral: SKIP ({category}, dup=True)",
+                heading=f"Tricameral: SKIP ({category}, dup=True)",
                 content=f"hash={req_hash}",
             )
             return
@@ -276,7 +281,7 @@ class BicameralRouter(Extension):
 
         self.agent.context.log.log(
             type="util",
-            heading=f"Bicameral: lane_{call_lane} ({category}) scores=A:{score_a:.0f}/B:{score_b:.0f}",
+            heading=f"Tricameral: lane_{call_lane} ({category}) scores=A:{score_a:.0f}/B:{score_b:.0f}",
             content=(
                 f"fingerprint=lane_{fingerprinted_lane}{redirect_str}\n"
                 f"A: pending={_surface.get_pending('A')} ema={_surface._lane_a_ema_ms:.0f}ms score={score_a:.1f}\n"
