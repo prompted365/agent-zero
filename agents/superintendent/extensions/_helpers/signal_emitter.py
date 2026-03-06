@@ -13,6 +13,9 @@ Contract:
 - Append-only: never modify old JSONL lines.
 - Latest-entry-per-ID-wins semantics.
 - PRESTIGE band is governance-blocked (silently dropped).
+- Dedup guard: same (date, id, state) emitted once per process lifetime.
+  Emitters write initial state only; tick engine advances volume/tick_count.
+- Origin provenance: OBS (world events), DEC (agent outputs), GOV (governance overlays).
 """
 
 import os
@@ -36,6 +39,12 @@ BAND_ATTENUATION = {
 VALID_KINDS = {"BEACON", "LESSON", "OPPORTUNITY", "TENSION"}
 VALID_BANDS = {"PRIMITIVE", "COGNITIVE", "SOCIAL"}
 VALID_STATUSES = {"active", "acknowledged", "working", "resolved", "expired", "warranted"}
+VALID_ORIGINS = {"OBS", "DEC", "GOV"}
+
+# In-memory dedup cache: {signal_id -> "date:state_hash"}
+# Resets on container restart. JSONL is the durable store.
+# Prevents observation recursion: same (date, id, state) writes once.
+_EMISSION_CACHE = {}
 
 
 def emit_signal(
@@ -53,8 +62,20 @@ def emit_signal(
     links=None,
     summary="",
     trace_id=None,
+    origin=None,
 ):
     """Emit a new Siren signal to the JSONL store.
+
+    Dedup guard: if the same (date, signal_id) has already been emitted
+    with identical state (kind, band, volume, subsystem, signature) in
+    this process lifetime, the write is silently skipped. This prevents
+    observation recursion — governance/guardrail retries within a single
+    frame do not produce duplicate JSONL entries.
+
+    To re-emit after a genuine state change, the caller must change at
+    least one state field (e.g. volume, signature, kind).
+
+    Volume advancement is tick-engine-only. Emitters write initial state.
 
     Args:
         signal_id: Unique ID (e.g. "sig_2026-02-20T03:00Z_ecotone_smoothing_abc1")
@@ -70,6 +91,8 @@ def emit_signal(
         suggested_checks: list of check strings
         links: list of file path strings
         summary: longer description for payload
+        trace_id: per-monologue UUID for thread attribution
+        origin: provenance class — OBS (world), DEC (agent), GOV (governance)
     """
     try:
         if band == "PRESTIGE" or band not in VALID_BANDS:
@@ -78,6 +101,17 @@ def emit_signal(
             return
 
         now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+
+        # --- Dedup guard: once per (date, id, state) per process lifetime ---
+        state_hash = hashlib.sha256(
+            f"{kind}:{band}:{volume}:{subsystem}:{signature}".encode()
+        ).hexdigest()[:8]
+        cache_key = f"{today}:{signal_id}"
+        if _EMISSION_CACHE.get(cache_key) == state_hash:
+            return  # Identical state already emitted — skip (not a new observation)
+        _EMISSION_CACHE[cache_key] = state_hash
+
         entry = {
             "type": "signal",
             "id": signal_id,
@@ -85,7 +119,7 @@ def emit_signal(
             "band": band,
             "motivation_layer": band,
             "source": source,
-            "source_date": now.strftime("%Y-%m-%d"),
+            "source_date": today,
             "subsystem": subsystem,
             "volume": volume,
             "volume_rate": volume_rate,
@@ -112,6 +146,8 @@ def emit_signal(
         }
         if trace_id:
             entry["trace_id"] = trace_id
+        if origin and origin in VALID_ORIGINS:
+            entry["origin"] = origin
 
         _append_signal(entry)
     except Exception:

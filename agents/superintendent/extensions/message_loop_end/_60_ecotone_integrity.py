@@ -231,6 +231,17 @@ class EcotoneIntegrity(Extension):
         )
 
         if verdict["pass"]:
+            # Emit LESSON signal on successful recovery after retries.
+            # A gate pass after >=1 retry is a genuine learning event:
+            # the system self-corrected under ecotone pressure.
+            if retries > 0:
+                self._emit_lesson_signal(
+                    f"recovery_after_{retries}_retries",
+                    f"Ecotone gate passed after {retries} retries (drift={drift:.2f}). "
+                    f"System self-corrected under ecotone pressure.",
+                    drift, retries, trace_id=_trace_id,
+                )
+
             # Reset retry counter on success
             self.agent.context.set_data("ecotone_retries", None)
             loop_data.extras_persistent.pop("ecotone_feedback", None)
@@ -275,6 +286,16 @@ class EcotoneIntegrity(Extension):
                 heading=f"Ecotone: SHALLOW_PASS after {retries} retries (drift={drift:.2f})",
             )
             self._log_epitaph(drift, verdict, retries, response, shallow_pass=True)
+            # Emit LESSON signal on SHALLOW_PASS — the gate learned something
+            # by exhausting retries. This pairs with the TENSION from _emit_failure_signal
+            # to enable harmonic triad detection (PRIMITIVE BEACON + COGNITIVE LESSON + TENSION).
+            self._emit_lesson_signal(
+                f"shallow_pass:{verdict.get('failure_code', 'UNKNOWN')}",
+                f"Ecotone gate exhausted {retries} retries on {verdict.get('failure_code', 'UNKNOWN')}. "
+                f"Response allowed through with unresolved tension (drift={drift:.2f}). "
+                f"{verdict.get('evidence', '')[:200]}",
+                drift, retries, trace_id=_trace_id,
+            )
             # Telemetry: chorus_outcome (shallow_pass)
             try:
                 from _helpers.chorus_telemetry import log_chorus_event
@@ -716,6 +737,47 @@ class EcotoneIntegrity(Extension):
             )
         except Exception:
             # Fail-silent: signal emission must never crash the gate
+            pass
+
+    def _emit_lesson_signal(
+        self, dedup_key: str, summary: str,
+        drift: float, retries: int, trace_id: str = None,
+    ):
+        """Emit a LESSON-kind signal on the shared signal bus.
+
+        LESSON signals enable harmonic triad detection: when a PRIMITIVE BEACON,
+        COGNITIVE LESSON, and TENSION co-occur within 24h, a warrant auto-mints.
+        Previously, ecotone only emitted BEACON and TENSION — this method closes
+        the LESSON gap.
+
+        Fail-silent: signal emission must never crash the gate.
+        """
+        try:
+            sig_id = make_dedup_signal_id("ecotone", f"lesson_{dedup_key}")
+
+            emit_signal(
+                signal_id=sig_id,
+                kind="LESSON",
+                band="COGNITIVE",
+                subsystem="ecotone",
+                source="extensions/message_loop_end/_60_ecotone_integrity.py",
+                signature=f"ecotone_lesson_{dedup_key}",
+                volume=20,
+                volume_rate=5,
+                max_volume=60,
+                ttl_hours=48,
+                summary=summary,
+                suggested_checks=[
+                    "Review ecotone gate retries and drift patterns",
+                    "Check if corresponding BEACON or TENSION signals exist for triad",
+                ],
+                links=[
+                    "vendor/agent-zero/agents/superintendent/extensions/message_loop_end/_60_ecotone_integrity.py",
+                    "audit-logs/ecotone/",
+                ],
+                trace_id=trace_id,
+            )
+        except Exception:
             pass
 
     def _emit_methylation_feedback(self, drift_data: dict, response: str):

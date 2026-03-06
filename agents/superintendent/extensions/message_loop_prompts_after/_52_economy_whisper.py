@@ -306,6 +306,8 @@ class EconomyWhisper(Extension):
                     summary=summary_text,
                     suggested_checks=checks,
                     links=sig_links,
+                    trace_id=self.agent.context.get_data("_current_trace_id"),
+                    origin="GOV",
                 )
         except Exception:
             # Fail-silent: signal emission must never crash the whisper
